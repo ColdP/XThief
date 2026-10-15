@@ -87,34 +87,39 @@ class BilibiliExtractor(private val settingsStore: XThiefSettingsStore) {
         val dash = play.optJSONObject("data")?.optJSONObject("dash")
             ?: throw BilibiliException("该视频没有可下载的 DASH 流（可能是番剧或需要大会员）")
 
-        // One audio track is muxed into every video rendition; the highest bitrate wins.
-        val audioUrl = dash.optJSONArray("audio")
+        // One audio track is muxed into every video rendition; the highest bitrate wins. Audio also
+        // comes with several mirrors, so those are kept as backups too.
+        val audioTracks = dash.optJSONArray("audio")
             ?.let { array ->
                 (0 until array.length())
                     .mapNotNull { array.optJSONObject(it) }
-                    .maxByOrNull { it.optLong("bandwidth", 0L) }
-                    ?.optString("baseUrl")
-                    ?.takeIf { it.isNotBlank() }
             }
+            .orEmpty()
+        val bestAudio = audioTracks.maxByOrNull { it.optLong("bandwidth", 0L) }
+        val audioUrl = bestAudio?.let { audioUrls(it) }
 
         val videos = dash.optJSONArray("video") ?: throw BilibiliException("该视频没有视频流")
-        val variants = (0 until videos.length()).mapNotNull { index ->
-            val track = videos.optJSONObject(index) ?: return@mapNotNull null
-            val url = track.optString("baseUrl").takeIf { it.isNotBlank() }
-                ?: track.optString("base_url").takeIf { it.isNotBlank() }
-                ?: return@mapNotNull null
-            VideoVariant(
-                // Some CDN hosts come back as plain http, which Android blocks by default.
-                url = url.replaceFirst("http://", "https://"),
-                bitrate = (track.optLong("bandwidth", 0L) / 1000L).toInt(),
-                contentType = "video/mp4",
-                width = track.optInt("width"),
-                height = track.optInt("height"),
-                audioUrl = audioUrl?.replaceFirst("http://", "https://"),
-                // Bilibili's media hosts reject requests without a matching Referer.
-                referer = REFERER,
-            )
-        }.distinctBy { it.url }
+        // The same quality is listed once per CDN, so group by quality id: the first mirror becomes
+        // the primary URL and the rest are kept for the downloader to fall back on.
+        val variants = (0 until videos.length())
+            .mapNotNull { index -> videos.optJSONObject(index) }
+            .groupBy { it.optInt("id") }
+            .mapNotNull { (_, mirrors) ->
+                val first = mirrors.first()
+                val urls = mirrors.flatMap { videoUrls(it) }.distinct()
+                if (urls.isEmpty()) return@mapNotNull null
+                VideoVariant(
+                    url = urls.first(),
+                    bitrate = (first.optLong("bandwidth", 0L) / 1000L).toInt(),
+                    contentType = "video/mp4",
+                    width = first.optInt("width"),
+                    height = first.optInt("height"),
+                    audioUrl = audioUrl?.firstOrNull(),
+                    // Bilibili's media hosts reject requests without a matching Referer.
+                    referer = REFERER,
+                    backupUrls = urls.drop(1),
+                )
+            }
         if (variants.isEmpty()) throw BilibiliException("没有解析到可下载的视频流")
 
         TweetMedia(
@@ -153,6 +158,25 @@ class BilibiliExtractor(private val settingsStore: XThiefSettingsStore) {
             }
         }.getOrNull()
     }
+
+    /** Every URL a media entry advertises, normalised to https. */
+    private fun videoUrls(track: JSONObject): List<String> = urlsOf(track)
+
+    private fun audioUrls(track: JSONObject): List<String> = urlsOf(track)
+
+    private fun urlsOf(track: JSONObject): List<String> = buildList {
+        // Some CDN hosts come back as plain http, which Android blocks by default.
+        track.optString("baseUrl").takeIf { it.isNotBlank() }?.let { add(it) }
+        track.optString("base_url").takeIf { it.isNotBlank() }?.let { add(it) }
+        track.optJSONArray("backupUrl")?.let { array ->
+            (0 until array.length()).mapNotNull { array.optString(it).takeIf(String::isNotBlank) }
+                .forEach { add(it) }
+        }
+        track.optJSONArray("backup_url")?.let { array ->
+            (0 until array.length()).mapNotNull { array.optString(it).takeIf(String::isNotBlank) }
+                .forEach { add(it) }
+        }
+    }.map { it.replaceFirst("http://", "https://") }.distinct()
 
     /**
      * Random browser-fingerprint values Bilibili's risk control looks for.

@@ -20,12 +20,23 @@ data class VideoVariant(
      * care.
      */
     val referer: String? = null,
+    /**
+     * Alternative hosts for the same rendition, tried in order when [url] fails.
+     *
+     * Bilibili returns one entry per CDN for a given quality, and some of them are P2P nodes
+     * (`mcdn.bilivideo.cn`, `*.mountaintoys.cn`) that answer 403. Keeping the mirrors means a bad
+     * node does not fail the whole download.
+     */
+    val backupUrls: List<String> = emptyList(),
 ) {
     /** True when this rendition must be downloaded as an HLS playlist rather than a plain MP4. */
     val isHls: Boolean get() = url.contains(".m3u8", ignoreCase = true)
 
     /** True when the audio arrives separately and has to be muxed in afterwards. */
     val needsMux: Boolean get() = !audioUrl.isNullOrBlank()
+
+    /** [url] plus every mirror, in the order they should be attempted. */
+    val urls: List<String> get() = listOf(url) + backupUrls
 
     val resolutionLabel: String
         get() = when {

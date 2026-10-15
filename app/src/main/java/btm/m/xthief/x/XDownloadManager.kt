@@ -445,12 +445,12 @@ class XDownloadManager(
         val audioFile = File(workspace, "audio_$stamp.mp4")
         var muxedFile: File? = null
         try {
-            fetchFileInto(variant.url, videoFile, variant.referer) { written ->
+            fetchFileInto(variant.urls, videoFile, variant.referer) { written ->
                 onProgress(written, -1L)
             }
             val audioUrl = variant.audioUrl
             if (!audioUrl.isNullOrBlank()) {
-                fetchFileInto(audioUrl, audioFile, variant.referer) { }
+                fetchFileInto(listOf(audioUrl), audioFile, variant.referer) { }
             }
 
             if (audioFile.length() > 0L) {
@@ -484,17 +484,40 @@ class XDownloadManager(
     }
 
     /**
-     * Streams a plain media URL into [file], sending the headers some CDNs insist on.
+     * Streams a media URL into [file], falling back to the mirrors in [urls] when one fails.
      *
-     * Only `Referer` is set for protected hosts, matching what yt-dlp sends to Bilibili: adding
-     * `Range` or `Origin` on top makes its upos CDNs answer 403.
+     * Bilibili lists one entry per CDN for a given quality, and its P2P nodes answer 403, so trying
+     * the alternatives is what makes those downloads reliable.
+     *
+     * Only `Referer` is set for protected hosts, matching what yt-dlp sends: adding `Range` or
+     * `Origin` on top makes its upos CDNs answer 403.
      */
     private suspend fun fetchFileInto(
-        url: String,
+        urls: List<String>,
         file: File,
         referer: String?,
         onProgress: (Long) -> Unit,
     ) = withContext(Dispatchers.IO) {
+        var lastError: Exception? = null
+        for (url in urls) {
+            try {
+                fetchOneInto(url, file, referer, onProgress)
+                return@withContext
+            } catch (e: Exception) {
+                // Drop whatever was written so the next mirror starts clean.
+                file.delete()
+                lastError = e
+            }
+        }
+        throw lastError ?: IOException("没有可用的下载地址")
+    }
+
+    private fun fetchOneInto(
+        url: String,
+        file: File,
+        referer: String?,
+        onProgress: (Long) -> Unit,
+    ) {
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 20_000
             readTimeout = 30_000
