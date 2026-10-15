@@ -8,6 +8,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,8 +19,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.state.ToggleableState
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import btm.m.xthief.BuildConfig
 import btm.m.xthief.data.AppColorMode
@@ -49,6 +55,8 @@ import btm.m.xthief.ui.hasAllFilesAccess
 import btm.m.xthief.ui.toast
 import com.kyant.backdrop.Backdrop
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
+import top.yukonga.miuix.kmp.basic.Checkbox
+import top.yukonga.miuix.kmp.basic.CheckboxDefaults
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -111,10 +119,15 @@ fun SettingsPage(
     onRequestAllFilesAccess: () -> Unit = {},
     onSimulateIsland: () -> Unit = {},
     onOpenPage: (DetailPage) -> Unit = {},
+    /** User folders, and the ones whose clips are kept out of the 全部 tab. */
+    folders: List<String> = emptyList(),
+    hiddenFromAll: Set<String> = emptySet(),
+    onSetHiddenFromAll: (Set<String>) -> Unit = {},
 ) {
     var directoryDraft by remember { mutableStateOf(settings.customDirectory) }
     var editingDirectory by remember { mutableStateOf(false) }
     var confirmClearHistory by remember { mutableStateOf(false) }
+    var showHiddenFolders by remember { mutableStateOf(false) }
     var editingCookie by remember { mutableStateOf(false) }
     var cookieAuthDraft by remember { mutableStateOf(settings.cookieAuthToken) }
     var cookieCsrfDraft by remember { mutableStateOf(settings.cookieCsrfToken) }
@@ -325,6 +338,17 @@ fun SettingsPage(
                     subtitle = "当前 $historyCount 条记录，不影响已下载文件",
                     onClick = { confirmClearHistory = true },
                 )
+                ActionRow(
+                    title = "「全部」中隐藏的文件夹",
+                    subtitle = if (folders.isEmpty()) {
+                        "还没有文件夹"
+                    } else if (hiddenFromAll.isEmpty()) {
+                        "未隐藏任何文件夹，点按选择"
+                    } else {
+                        "已隐藏 ${hiddenFromAll.size} 个文件夹的内容"
+                    },
+                    onClick = { if (folders.isNotEmpty()) showHiddenFolders = true },
+                )
             }
         }
         item {
@@ -414,6 +438,18 @@ fun SettingsPage(
                 onClearHistory()
             },
             onDismiss = { confirmClearHistory = false },
+        )
+    }
+
+    if (showHiddenFolders) {
+        HiddenFoldersSheet(
+            folders = folders,
+            initial = hiddenFromAll,
+            onConfirm = { chosen ->
+                onSetHiddenFromAll(chosen)
+                showHiddenFolders = false
+            },
+            onDismiss = { showHiddenFolders = false },
         )
     }
 
@@ -608,5 +644,82 @@ private fun LabeledInput(
         )
         Spacer(Modifier.height(6.dp))
         XThiefTextField(value = value, onValueChange = onValueChange)
+    }
+}
+
+/**
+ * Picks which folders are kept out of the 全部 tab. Checkbox list laid out like HyperChanger's
+ * scope-restart dialog: the whole row toggles, not just the box.
+ */
+@Composable
+private fun HiddenFoldersSheet(
+    folders: List<String>,
+    initial: Set<String>,
+    onConfirm: (Set<String>) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var selected by remember { mutableStateOf(initial) }
+
+    WindowDialog(show = true, onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                text = "「全部」中隐藏的文件夹",
+                modifier = Modifier.fillMaxWidth(),
+                style = MiuixTheme.textStyles.title3,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Start,
+            )
+            Text(
+                text = "勾选的文件夹，其中的视频不会出现在「全部」页。",
+                modifier = Modifier.fillMaxWidth(),
+                style = MiuixTheme.textStyles.footnote2,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                textAlign = TextAlign.Start,
+            )
+            Column(Modifier.fillMaxWidth()) {
+                folders.forEach { folder ->
+                    val checked = folder in selected
+                    val toggle = {
+                        selected = if (checked) selected - folder else selected + folder
+                    }
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable(onClick = toggle)
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(
+                            state = if (checked) ToggleableState.On else ToggleableState.Off,
+                            onClick = toggle,
+                            colors = CheckboxDefaults.checkboxColors(
+                                uncheckedForegroundColor = Color(0x808F8F8F),
+                            ),
+                        )
+                        Text(
+                            text = folder,
+                            style = MiuixTheme.textStyles.body1,
+                            modifier = Modifier.padding(start = 10.dp),
+                        )
+                    }
+                }
+            }
+            Row(
+                Modifier.fillMaxWidth().padding(top = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                GlassDialogButton(
+                    onClick = { onConfirm(selected) },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(
+                        color = Color(0xFF0088FF),
+                        contentColor = Color.White,
+                    ),
+                ) { Text("保存") }
+                GlassDialogButton(onClick = onDismiss, modifier = Modifier.weight(1f)) {
+                    Text("取消")
+                }
+            }
+        }
     }
 }

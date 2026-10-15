@@ -27,8 +27,16 @@ class FolderStore(context: Context) {
     private val _membership = MutableStateFlow(loadMembership())
     val membership: StateFlow<Map<String, Set<String>>> = _membership.asStateFlow()
 
+    /**
+     * Folders whose clips are hidden from the 全部 tab. Kept here rather than in the settings store
+     * because it only ever refers to folders this store owns.
+     */
+    private val _hiddenFromAll = MutableStateFlow(loadHiddenFromAll())
+    val hiddenFromAll: StateFlow<Set<String>> = _hiddenFromAll.asStateFlow()
+
     val currentFolders: List<String> get() = _folders.value
     val currentMembership: Map<String, Set<String>> get() = _membership.value
+    val currentHiddenFromAll: Set<String> get() = _hiddenFromAll.value
 
     /** Appends a folder; blank names and duplicates are ignored. */
     fun add(name: String) {
@@ -79,9 +87,20 @@ class FolderStore(context: Context) {
         if (next != _membership.value) persistMembership(next)
     }
 
+    /** Replaces the set of folders hidden from 全部; names that no longer exist are dropped. */
+    fun setHiddenFromAll(folders: Set<String>) {
+        val valid = folders intersect _folders.value.toSet()
+        _hiddenFromAll.value = valid
+        prefs.edit().putString(KEY_HIDDEN_FROM_ALL, JSONArray(valid.toList()).toString()).apply()
+    }
+
     private fun persistFolders(list: List<String>) {
         _folders.value = list
         prefs.edit().putString(KEY_FOLDERS, JSONArray(list).toString()).apply()
+        // A deleted folder cannot stay hidden.
+        if (_hiddenFromAll.value.any { it !in list }) {
+            setHiddenFromAll(_hiddenFromAll.value)
+        }
     }
 
     private fun persistMembership(map: Map<String, Set<String>>) {
@@ -110,8 +129,14 @@ class FolderStore(context: Context) {
         }
         result
     }.getOrDefault(emptyMap())
+
+    private fun loadHiddenFromAll(): Set<String> = runCatching {
+        val array = JSONArray(prefs.getString(KEY_HIDDEN_FROM_ALL, "[]"))
+        (0 until array.length()).map { array.optString(it) }.filter { it.isNotBlank() }.toSet()
+    }.getOrDefault(emptySet())
 }
 
 private const val PREF_GROUP = "xthief_folders"
 private const val KEY_FOLDERS = "folders"
 private const val KEY_MEMBERSHIP = "membership"
+private const val KEY_HIDDEN_FROM_ALL = "hidden_from_all"

@@ -137,6 +137,14 @@ fun LibraryPage(
     folders: List<String> = emptyList(),
     /** folder -> member file names. */
     membership: Map<String, Set<String>> = emptyMap(),
+    /**
+     * File names that are currently starred, read straight from the history. Taking this instead of
+     * relying on MediaEntry.favorite keeps the 收藏 tab correct right away: the entry's own flag is
+     * only back-filled by a scan, and scans are rate-limited.
+     */
+    favoriteFileNames: Set<String> = emptySet(),
+    /** Folders whose clips are kept out of the 全部 tab (configured in settings). */
+    hiddenFromAll: Set<String> = emptySet(),
     onAddFolder: (String) -> Unit = {},
     onRenameFolder: (String, String) -> Unit = { _, _ -> },
     onDeleteFolder: (String) -> Unit = {},
@@ -166,10 +174,31 @@ fun LibraryPage(
     // Fall back to 全部 if the selected folder disappeared.
     LaunchedEffect(tabs.size) { if (selectedTab > addTabIndex) selectedTab = 0 }
 
-    val visibleEntries = remember(entries, selectedTab, folders, membership) {
+    val visibleEntries = remember(
+        entries,
+        selectedTab,
+        folders,
+        membership,
+        favoriteFileNames,
+        hiddenFromAll,
+    ) {
         when {
-            selectedTab == 0 || selectedTab == addTabIndex -> entries
-            selectedTab == 1 -> entries.filter { it.favorite }
+            // 添加 is an action tab, so it shows the unfiltered list.
+            selectedTab == addTabIndex -> entries
+            selectedTab == 0 -> {
+                if (hiddenFromAll.isEmpty()) {
+                    entries
+                } else {
+                    val hidden = hiddenFromAll.flatMapTo(hashSetOf()) {
+                        membership[it].orEmpty()
+                    }
+                    entries.filter { it.fileName !in hidden }
+                }
+            }
+            selectedTab == 1 -> entries.filter {
+                // Prefer the live history set; fall back to the scanned flag.
+                it.fileName in favoriteFileNames || it.favorite
+            }
             else -> {
                 val members = membership[folders.getOrNull(selectedTab - 2)].orEmpty()
                 entries.filter { it.fileName in members }
@@ -482,7 +511,9 @@ fun LibraryPage(
     if (movingSelection) {
         FolderPickerSheet(
             folders = folders,
-            initialFavorites = visibleEntries.filter { it.uri in selectedIds }.all { it.favorite },
+            initialFavorites = visibleEntries
+                .filter { it.uri in selectedIds }
+                .all { it.fileName in favoriteFileNames || it.favorite },
             // Union of what the selection already belongs to.
             initialFolders = membership
                 .filterValues { files -> visibleEntries.any { it.uri in selectedIds && it.fileName in files } }

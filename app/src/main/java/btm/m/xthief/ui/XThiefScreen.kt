@@ -86,6 +86,7 @@ fun XThiefScreen(
     val library by container.mediaLibrary.entries.collectAsState()
     val folders by container.folderStore.folders.collectAsState()
     val folderMembership by container.folderStore.membership.collectAsState()
+    val hiddenFromAll by container.folderStore.hiddenFromAll.collectAsState()
     val tasks by container.downloadManager.tasks.collectAsStateWithLifecycle()
     // True while the media library is in multi-select: the bottom navigation slides away so the
     // floating selection toolbar has the area to itself.
@@ -316,6 +317,13 @@ fun XThiefScreen(
                                 thumbnails = container.thumbnailCache,
                                 folders = folders,
                                 membership = folderMembership,
+                                // Live from the history, so starring shows up without waiting for a
+                                // (rate-limited) media-library rescan.
+                                favoriteFileNames = remember(history) {
+                                    history.filter { it.favorite }
+                                        .mapTo(hashSetOf()) { it.fileName }
+                                },
+                                hiddenFromAll = hiddenFromAll,
                                 onAddFolder = { container.folderStore.add(it) },
                                 onRenameFolder = { old, new ->
                                     container.folderStore.rename(old, new)
@@ -348,6 +356,13 @@ fun XThiefScreen(
                                                 }
                                         }
                                     }
+                                    // MediaEntry.favorite is back-filled by a scan, so the library
+                                    // has to be re-read before the 收藏 tab reflects the change.
+                                    scope.launch {
+                                        container.mediaLibrary.refresh(
+                                            listOf(settings.effectiveDirectory),
+                                        )
+                                    }
                                 },
                             )
 
@@ -362,6 +377,9 @@ fun XThiefScreen(
                                 onClearHistory = { container.historyStore.clear() },
                                 historyCount = history.size,
                                 libraryCount = library.size,
+                                folders = folders,
+                                hiddenFromAll = hiddenFromAll,
+                                onSetHiddenFromAll = { container.folderStore.setHiddenFromAll(it) },
                                 backdrop = backdrop,
                                 allFilesAccess = hasAllFilesAccess(context),
                                 islandStatus = if (container.islandNotifier.isSupported) {
@@ -370,8 +388,7 @@ fun XThiefScreen(
                                     "当前系统未声明支持超级岛（persist.sys.feature.island=false）"
                                 },
                                 onRequestAllFilesAccess = { requestAllFilesAccess(context) },
-                                onSimulateIsland = {
-                                    val notifier = container.islandNotifier
+                                onSimulateIsland = {                                    val notifier = container.islandNotifier
                                     notifier.simulate(settings.islandSimulationSeconds * 1000L)
                                     toast(
                                         context,
