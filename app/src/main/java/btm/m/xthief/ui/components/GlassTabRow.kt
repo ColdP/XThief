@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
+import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.effects.vibrancy
 import com.kyant.backdrop.highlight.Highlight
 import com.kyant.backdrop.shadow.Shadow
@@ -38,6 +39,10 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 private val TAB_ROW_HEIGHT = 42.dp
 private val TAB_ROW_SHAPE = RoundedCornerShape(50.dp)
 private val TAB_ROW_BLUR = 6.dp
+
+/** Refraction of the capsule's edge. Taller/thicker than the toolbar's 12/32 for a heavier lens. */
+private val TAB_ROW_LENS_HEIGHT = 18.dp
+private val TAB_ROW_LENS_AMOUNT = 44.dp
 
 /**
  * Scrolling capsule tab row for the media library's folders.
@@ -88,8 +93,16 @@ fun GlassTabRow(
             effects = {
                 vibrancy()
                 blur(TAB_ROW_BLUR.toPx())
+                // Edge refraction, set higher than the toolbar capsule's so the strip reads as a
+                // thick piece of glass; the chromatic aberration is what gives it the colour fringe.
+                lens(
+                    TAB_ROW_LENS_HEIGHT.toPx(),
+                    TAB_ROW_LENS_AMOUNT.toPx(),
+                    depthEffect = true,
+                    chromaticAberration = true,
+                )
             },
-            highlight = { Highlight.Default.copy(alpha = .55f) },
+            highlight = { Highlight.Default.copy(alpha = .62f) },
             shadow = { Shadow.Default.copy(radius = 10.dp, color = Color.Black, alpha = .28f) },
             innerShadow = null,
             onDrawSurface = {
