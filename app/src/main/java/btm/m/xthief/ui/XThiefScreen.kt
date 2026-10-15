@@ -511,6 +511,13 @@ fun XThiefScreen(
                                 source = source,
                                 favorite = record?.favorite == true,
                                 shortVideoMode = settings.shortVideoMode,
+                                folders = folders,
+                                onPickFolder = { folder ->
+                                    val entry = library.firstOrNull { it.uri == source.uri }
+                                    if (entry != null) {
+                                        container.folderStore.setFolder(entry.fileName, folder)
+                                    }
+                                },
                                 onSwitchVideo = { direction ->
                                     val index = playerQueue.indexOfFirst { it.uri == source.uri }
                                     if (index >= 0) {

@@ -116,13 +116,16 @@ fun AppPage(
                     LocalToolbarBackdrop provides backdrop,
                     LocalToolbarCollapsed provides collapsedFraction,
                 ) {
-                    Box {
-                        TopBarMaterial(
-                            backdrop = backdrop,
-                            surface = surface,
-                            progress = topBarMaterialProgress,
-                            tintedWhenExpanded = background == null,
-                        )
+                    // Column so the optional top content stacks below the bar (and therefore draws
+                    // above the gradient-blur material) instead of being overlaid on the title.
+                    Column {
+                        Box {
+                            TopBarMaterial(
+                                backdrop = backdrop,
+                                surface = surface,
+                                progress = topBarMaterialProgress,
+                                tintedWhenExpanded = background == null,
+                            )
                         if (showLargeTitle) {
                             TopAppBar(
                                 title = "",
@@ -198,54 +201,50 @@ fun AppPage(
                                 Text(title, style = MiuixTheme.textStyles.title3, maxLines = 1)
                             }
                         }
+                        }
+                        if (topContent != null) {
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp)
+                                    .padding(bottom = 8.dp),
+                            ) {
+                                topContent()
+                            }
+                        }
                     }
                 }
             },
         ) { padding ->
             Box(Modifier.fillMaxSize().layerBackdrop(backdrop)) {
-                // The top content is inset past the bar but outside the scrolling area, so it stays
-                // pinned while the body moves underneath.
                 val contentPadding = PaddingValues(
                     start = 16.dp,
                     end = 16.dp,
-                    top = if (topContent != null) 4.dp else padding.calculateTopPadding() + 4.dp,
+                    top = padding.calculateTopPadding() + 4.dp,
                     bottom = padding.calculateBottomPadding() + contentBottomPadding.dp,
                 )
-                Column(Modifier.fillMaxSize()) {
-                    if (topContent != null) {
-                        Box(
-                            Modifier
-                                .fillMaxWidth()
-                                .padding(top = padding.calculateTopPadding()),
-                        ) {
-                            topContent()
-                        }
-                    }
-                    if (staggeredContent != null) {
-                        LazyVerticalStaggeredGrid(
-                            columns = StaggeredGridCells.Fixed(2),
-                            state = staggeredState,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .weight(1f)
-                                .nestedScroll(scroll.nestedScrollConnection),
-                            contentPadding = contentPadding,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            verticalItemSpacing = 12.dp,
-                            content = staggeredContent,
-                        )
-                    } else {
-                        LazyColumn(
-                            state = listState,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .weight(1f)
-                                .nestedScroll(scroll.nestedScrollConnection),
-                            contentPadding = contentPadding,
-                            verticalArrangement = Arrangement.spacedBy(12.dp),
-                            content = content,
-                        )
-                    }
+                if (staggeredContent != null) {
+                    LazyVerticalStaggeredGrid(
+                        columns = StaggeredGridCells.Fixed(2),
+                        state = staggeredState,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .nestedScroll(scroll.nestedScrollConnection),
+                        contentPadding = contentPadding,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalItemSpacing = 12.dp,
+                        content = staggeredContent,
+                    )
+                } else {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .nestedScroll(scroll.nestedScrollConnection),
+                        contentPadding = contentPadding,
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                        content = content,
+                    )
                 }
             }
         }

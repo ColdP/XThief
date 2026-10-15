@@ -127,6 +127,8 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 import btm.m.xthief.data.NavigationStyle
 import btm.m.xthief.ui.TopBarMaterial
 import btm.m.xthief.ui.components.BlurFadeContent
+import btm.m.xthief.ui.components.FavoriteToggle
+import btm.m.xthief.ui.components.FolderPickerSheet
 import btm.m.xthief.ui.components.GlassDialogButton
 import btm.m.xthief.ui.components.GlassFloatingToolbar
 import btm.m.xthief.ui.components.GlassToolbarIconButton
@@ -263,6 +265,9 @@ fun PlayerScreen(
     shortVideoMode: Boolean = false,
     /** -1 = previous clip, +1 = next clip. */
     onSwitchVideo: (Int) -> Unit = {},
+    /** Folders the favourite button can file this clip into. */
+    folders: List<String> = emptyList(),
+    onPickFolder: (String?) -> Unit = {},
     onToggleFavorite: () -> Unit,
     onOpenWith: () -> Unit,
     onShare: () -> Unit,
@@ -309,6 +314,7 @@ fun PlayerScreen(
     var offset by remember { mutableStateOf(Offset.Zero) }
     var chromeVisible by remember { mutableStateOf(true) }
     var showInfo by remember { mutableStateOf(false) }
+    var showFolderPicker by remember { mutableStateOf(false) }
 
     // Sample the video so every glass surface and its content follows what is actually behind it.
     var textureView by remember { mutableStateOf<TextureView?>(null) }
@@ -467,6 +473,20 @@ fun PlayerScreen(
             colorSpace = colorSpaceLabel,
             onDismiss = { showInfo = false },
         )
+
+        // The favourite button opens this: starring plus every folder, in one sheet.
+        if (showFolderPicker) {
+            FolderPickerSheet(
+                folders = folders,
+                title = "收藏与文件夹",
+                favoriteToggle = FavoriteToggle(favorite = favorite) { onToggleFavorite() },
+                onPick = { folder ->
+                    onPickFolder(folder)
+                    showFolderPicker = false
+                },
+                onDismiss = { showFolderPicker = false },
+            )
+        }
 
         Box(Modifier.fillMaxSize().background(Color.Black)) {
             // Recorded once here; the glass bars above sample this backdrop. The picture follows
@@ -779,7 +799,7 @@ fun PlayerScreen(
                     highlightAlpha = 0f,
                     surfaceTint = glassTint,
                     contentColor = barInk,
-                    onToggleFavorite = onToggleFavorite,
+                    onToggleFavorite = { showFolderPicker = true },
                     onOpenWith = onOpenWith,
                     onInfo = { showInfo = true },
                     onShare = onShare,

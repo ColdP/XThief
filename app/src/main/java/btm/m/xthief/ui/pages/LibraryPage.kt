@@ -75,9 +75,11 @@ import btm.m.xthief.data.MediaEntry
 import btm.m.xthief.data.ThumbnailCache
 import btm.m.xthief.ui.AppPage
 import btm.m.xthief.ui.components.EmptyState
+import btm.m.xthief.ui.components.FolderPickerSheet
 import btm.m.xthief.ui.components.GlassDialogButton
 import btm.m.xthief.ui.components.GlassFloatingToolbar
 import btm.m.xthief.ui.components.GlassFloatingToolbarRow
+import btm.m.xthief.ui.components.GlassTabRow
 import btm.m.xthief.ui.components.GlassToolbarIconButton
 import btm.m.xthief.ui.components.SensitiveBadge
 import btm.m.xthief.ui.components.TOOLBAR_MAX_BLUR
@@ -201,48 +203,27 @@ fun LibraryPage(
 
     AppPage(
         title = "媒体库",
-        // Folder tabs sit right under the title bar and stay there while the grid scrolls.
+        // Folder tabs sit right under the title bar and stay there while the grid scrolls. The row
+        // is a scrolling capsule with its own backdrop glass; long-press opens the folder editor.
         topContent = {
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 8.dp)
-                    // Long-press is handled out here because TabRow only reports taps.
-                    // requireUnconsumed = false keeps the tabs' own clicks working.
-                    .pointerInput(folders) {
-                        awaitPointerEventScope {
-                            while (true) {
-                                awaitFirstDown(requireUnconsumed = false)
-                                val released = withTimeoutOrNull(
-                                    viewConfiguration.longPressTimeoutMillis,
-                                ) {
-                                    waitForUpOrCancellation()
-                                }
-                                if (released == null) {
-                                    val index = selectedTab
-                                    if (index >= 2 && index < addTabIndex) {
-                                        editingFolder = FolderEditTarget(folders[index - 2])
-                                    }
-                                    waitForUpOrCancellation()
-                                }
-                            }
-                        }
-                    },
-            ) {
-                TabRow(
-                    tabs = tabs,
-                    selectedTabIndex = selectedTab,
-                    onTabSelected = { index ->
-                        if (index == addTabIndex) {
-                            // 添加 is an action, not a filter: it opens the create sheet.
-                            editingFolder = FolderEditTarget(null)
-                        } else {
-                            selectedTab = index
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
+            GlassTabRow(
+                tabs = tabs,
+                selectedIndex = selectedTab,
+                onTabSelected = { index ->
+                    if (index == addTabIndex) {
+                        // 添加 is an action, not a filter: it opens the create sheet.
+                        editingFolder = FolderEditTarget(null)
+                    } else {
+                        selectedTab = index
+                    }
+                },
+                onTabLongPress = { index ->
+                    if (index >= 2 && index < addTabIndex) {
+                        editingFolder = FolderEditTarget(folders[index - 2])
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+            )
         },
         floatingToolbarPosition = ToolbarPosition.BottomCenter,
         floatingToolbar = {
@@ -557,47 +538,6 @@ private fun FolderEditSheet(
 }
 
 /** Picks the destination folder for the current selection. */
-@Composable
-private fun FolderPickerSheet(
-    folders: List<String>,
-    onPick: (String?) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    WindowDialog(show = true, onDismissRequest = onDismiss) {
-        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text(
-                text = "移动到",
-                modifier = Modifier.fillMaxWidth(),
-                style = MiuixTheme.textStyles.title3,
-                fontWeight = FontWeight.Bold,
-                textAlign = TextAlign.Start,
-            )
-            if (folders.isEmpty()) {
-                Text(
-                    text = "还没有文件夹，先在媒体库的「添加」里建一个。",
-                    modifier = Modifier.fillMaxWidth(),
-                    style = MiuixTheme.textStyles.body2,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                    textAlign = TextAlign.Start,
-                )
-            } else {
-                folders.forEach { folder ->
-                    GlassDialogButton(
-                        onClick = { onPick(folder) },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text(folder) }
-                }
-                GlassDialogButton(
-                    onClick = { onPick(null) },
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text("移出文件夹") }
-            }
-            GlassDialogButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) {
-                Text("取消")
-            }
-        }
-    }
-}
 
 /** One library entry, using MIUIX's card padding and an animated selection checkbox. */
 @OptIn(ExperimentalFoundationApi::class)
