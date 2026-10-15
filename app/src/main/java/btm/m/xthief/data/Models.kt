@@ -66,6 +66,8 @@ data class DownloadRecord(
     val completed: Boolean,
     /** The source post was flagged sensitive; drives library labelling / filtering. */
     val sensitive: Boolean = false,
+    /** Starred by the user from the built-in player. */
+    val favorite: Boolean = false,
 )
 
 /** A downloaded file surfaced by the media library. */
@@ -82,6 +84,8 @@ data class MediaEntry(
     val source: MediaSource = MediaSource.LIBRARY,
     /** True when the matching history record came from a sensitive post. */
     val sensitive: Boolean = false,
+    /** True when the matching history record was starred in the player. */
+    val favorite: Boolean = false,
 )
 
 enum class MediaSource { LIBRARY, HISTORY }

@@ -31,6 +31,18 @@ class HistoryStore(context: Context) {
         persist(emptyList())
     }
 
+    /** Stars / unstars a record from the player. */
+    fun setFavorite(id: String, favorite: Boolean) {
+        val next = _records.value.map { record ->
+            if (record.id == id) record.copy(favorite = favorite) else record
+        }
+        persist(next)
+    }
+
+    /** Looks a record up by the media file it produced, so the library can show its star. */
+    fun byFileName(fileName: String): DownloadRecord? =
+        _records.value.firstOrNull { it.fileName == fileName }
+
     fun prune(keepDays: Int) {
         if (keepDays <= 0) return
         val cutoff = System.currentTimeMillis() - keepDays * 24L * 60L * 60L * 1000L
@@ -61,6 +73,7 @@ class HistoryStore(context: Context) {
                 createdAt = obj.optLong("createdAt"),
                 completed = obj.optBoolean("completed", true),
                 sensitive = obj.optBoolean("sensitive", false),
+                favorite = obj.optBoolean("favorite", false),
             )
         }.sortedByDescending { it.createdAt }
     }.getOrDefault(emptyList())
@@ -82,7 +95,8 @@ class HistoryStore(context: Context) {
                     .put("byteCount", record.byteCount)
                     .put("createdAt", record.createdAt)
                     .put("completed", record.completed)
-                    .put("sensitive", record.sensitive),
+                    .put("sensitive", record.sensitive)
+                    .put("favorite", record.favorite),
             )
         }
         return array.toString()

@@ -2,6 +2,7 @@
 // Copyright 2026 btm_m
 package btm.m.xthief.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
@@ -42,11 +43,14 @@ import btm.m.xthief.ui.components.HostTab
 import btm.m.xthief.ui.components.LocalDialogBackdrop
 import btm.m.xthief.ui.components.NavAnimationTiming
 import btm.m.xthief.ui.components.ToolbarAnimationTiming
+import btm.m.xthief.ui.components.XThiefDialog
 import btm.m.xthief.ui.pages.AboutScreen
 import btm.m.xthief.ui.pages.DownloadTab
 import btm.m.xthief.ui.pages.HistoryPage
 import btm.m.xthief.ui.pages.LicenseScreen
 import btm.m.xthief.ui.pages.LibraryPage
+import btm.m.xthief.ui.pages.PlayerScreen
+import btm.m.xthief.ui.pages.PlayerSource
 import btm.m.xthief.ui.pages.SettingsPage
 import btm.m.xthief.x.DownloadStatus
 import com.kyant.backdrop.backdrops.layerBackdrop
@@ -111,6 +115,9 @@ fun XThiefScreen(
     val dark = rememberDarkTheme(settings.appColorMode)
     var tab by remember { mutableStateOf(MainTab.PARSE) }
     var pageStack by remember { mutableStateOf<List<DetailPage>>(emptyList()) }
+    // Non-null while the built-in player covers the screen; it is not a DetailPage because it
+    // carries the clip it is playing.
+    var playerSource by remember { mutableStateOf<PlayerSource?>(null) }
     val backdrop = rememberLayerBackdrop()
     val selectedIndex = remember { mutableIntStateOf(tab.ordinal) }
     if (selectedIndex.intValue != tab.ordinal) selectedIndex.intValue = tab.ordinal
@@ -199,7 +206,14 @@ fun XThiefScreen(
                                 tasks = tasks,
                                 onDelete = { container.historyStore.remove(it.id) },
                                 onClear = { container.historyStore.clear() },
-                                onOpen = { openUri(container, it.uri) },
+                                onOpen = { record ->
+                                    playerSource = PlayerSource(
+                                        uri = record.uri,
+                                        title = record.fileName.ifBlank { "未命名视频" },
+                                        mediaFileName = record.fileName,
+                                        subtitle = record.variantLabel,
+                                    )
+                                },
                                 onShare = { shareRecord(container, it) },
                                 toolbarVisible = downloadToolbarVisible,
                                 onSelectionModeChange = { active -> downloadSelecting = active },
@@ -213,7 +227,23 @@ fun XThiefScreen(
                                         container.mediaLibrary.refresh(listOf(settings.effectiveDirectory))
                                     }
                                 },
-                                onOpen = { openUri(container, it.uri) },
+                                onOpen = { entry ->
+                                    playerSource = PlayerSource(
+                                        uri = entry.uri,
+                                        title = entry.displayName,
+                                        mediaFileName = entry.fileName,
+                                        subtitle = buildString {
+                                            append(fileSizeLabel(entry.sizeBytes))
+                                            if (entry.width > 0 && entry.height > 0) {
+                                                append(" · ${entry.width}×${entry.height}")
+                                            }
+                                            if (entry.durationMs > 0) {
+                                                val total = entry.durationMs / 1000
+                                                append(" · %d:%02d".format(total / 60, total % 60))
+                                            }
+                                        },
+                                    )
+                                },
                                 onShare = { shareUri(container, it.uri, it.displayName) },
                                 onDelete = { container.mediaLibrary.delete(it) },
                                 onDeleteAll = { targets -> container.mediaLibrary.deleteAll(targets) },
@@ -359,6 +389,59 @@ fun XThiefScreen(
                                 )
                             }
                         }
+                    }
+                }
+
+                // Built-in player: covers the whole screen while a clip is open.
+                playerSource?.let { source ->
+                    val record = history.firstOrNull { it.fileName == source.mediaFileName }
+                    var confirmPlayerDelete by remember(source.uri) { mutableStateOf(false) }
+                    BackHandler(enabled = true) { playerSource = null }
+                    PlayerScreen(
+                        source = source,
+                        favorite = record?.favorite == true,
+                        onToggleFavorite = {
+                            record?.let {
+                                container.historyStore.setFavorite(it.id, !it.favorite)
+                            }
+                        },
+                        onOpenWith = { openUri(container, source.uri) },
+                        onInfo = {
+                            toast(
+                                context,
+                                buildString {
+                                    append(source.title)
+                                    if (source.subtitle.isNotBlank()) append("\n${source.subtitle}")
+                                    append("\n${source.uri}")
+                                },
+                            )
+                        },
+                        onDelete = { confirmPlayerDelete = true },
+                        onBack = { playerSource = null },
+                    )
+                    if (confirmPlayerDelete) {
+                        XThiefDialog(
+                            title = "删除视频",
+                            message = "「${source.title}」将从设备存储中永久删除。",
+                            confirmText = "删除",
+                            destructive = true,
+                            onConfirm = {
+                                confirmPlayerDelete = false
+                                val target = library.firstOrNull {
+                                    it.fileName == source.mediaFileName
+                                }
+                                if (target != null) {
+                                    scope.launch {
+                                        container.mediaLibrary.delete(target)
+                                        container.mediaLibrary.refresh(
+                                            listOf(settings.effectiveDirectory),
+                                        )
+                                    }
+                                }
+                                playerSource = null
+                            },
+                            onDismiss = { confirmPlayerDelete = false },
+                        )
                     }
                 }
             }

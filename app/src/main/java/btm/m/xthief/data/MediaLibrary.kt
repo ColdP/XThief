@@ -39,15 +39,21 @@ class MediaLibrary(
         if (now - lastScanAt < SCAN_MIN_INTERVAL_MS) return
         lastScanAt = now
         val scanned = withContext(Dispatchers.IO) { query(scannedDirectories(directories)) }
-        // Stamp the sensitive flag from the download history so the library can label or filter
-        // these entries later; MediaStore itself carries no such metadata.
-        val sensitiveNames = history?.current.orEmpty()
+        // Stamp the sensitive and favorite flags from the download history so the library can label
+        // or filter these entries later; MediaStore itself carries no such metadata.
+        val records = history?.current.orEmpty()
+        val sensitiveNames = records
             .filter { it.sensitive }
+            .mapTo(hashSetOf()) { it.fileName }
+        val favoriteNames = records
+            .filter { it.favorite }
             .mapTo(hashSetOf()) { it.fileName }
         _entries.value = scanned
             .map { entry ->
-                if (!entry.sensitive && entry.fileName in sensitiveNames) {
-                    entry.copy(sensitive = true)
+                val sensitive = entry.sensitive || entry.fileName in sensitiveNames
+                val favorite = entry.favorite || entry.fileName in favoriteNames
+                if (sensitive != entry.sensitive || favorite != entry.favorite) {
+                    entry.copy(sensitive = sensitive, favorite = favorite)
                 } else {
                     entry
                 }
