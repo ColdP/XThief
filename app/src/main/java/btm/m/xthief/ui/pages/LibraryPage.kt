@@ -47,6 +47,8 @@ import btm.m.xthief.ui.components.EmptyState
 import btm.m.xthief.ui.components.GlassFloatingToolbar
 import btm.m.xthief.ui.components.GlassFloatingToolbarRow
 import btm.m.xthief.ui.components.IconAction
+import btm.m.xthief.ui.components.SensitiveBadge
+import btm.m.xthief.ui.components.TOOLBAR_MAX_BLUR
 import btm.m.xthief.ui.components.ToolbarAnimationTiming
 import btm.m.xthief.ui.components.XThiefDialog
 import btm.m.xthief.ui.fileSizeLabel
@@ -315,13 +317,19 @@ private fun MediaCard(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(Modifier.weight(1f)) {
-                Text(
-                    text = entry.displayName,
-                    style = MiuixTheme.textStyles.body1,
-                    fontWeight = FontWeight.Medium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = entry.displayName,
+                        style = MiuixTheme.textStyles.body1,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    if (entry.sensitive) {
+                        SensitiveBadge(Modifier.padding(start = 8.dp))
+                    }
+                }
                 Text(
                     text = buildString {
                         append(fileSizeLabel(entry.sizeBytes))
@@ -367,6 +375,3 @@ private fun durationLabel(millis: Long): String {
     val seconds = totalSeconds % 60
     return "%d:%02d".format(minutes, seconds)
 }
-
-/** Blur radius the floating toolbar resolves out of as it appears. */
-private val TOOLBAR_MAX_BLUR = 12.dp

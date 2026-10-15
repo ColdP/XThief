@@ -14,8 +14,8 @@ import btm.m.xthief.x.XVideoExtractor
 class XThiefApplication : Application() {
     val settingsStore: XThiefSettingsStore by lazy { XThiefSettingsStore(this) }
     val historyStore: HistoryStore by lazy { HistoryStore(this) }
-    val mediaLibrary: MediaLibrary by lazy { MediaLibrary(this) }
-    val extractor: XVideoExtractor by lazy { XVideoExtractor() }
+    val mediaLibrary: MediaLibrary by lazy { MediaLibrary(this, historyStore) }
+    val extractor: XVideoExtractor by lazy { XVideoExtractor(settingsStore) }
     val downloadManager: XDownloadManager by lazy { XDownloadManager(this, settingsStore) }
     val islandNotifier: IslandNotifier by lazy { IslandNotifier(this) }
 

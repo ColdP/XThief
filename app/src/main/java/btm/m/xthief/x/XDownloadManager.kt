@@ -58,6 +58,8 @@ data class DownloadTask(
     val speedBytesPerSecond: Long = 0L,
     val error: String? = null,
     val savedUri: String? = null,
+    /** The source post was flagged sensitive; carried into the history record. */
+    val sensitive: Boolean = false,
 ) {
     val progress: Float
         get() = if (totalBytes > 0) (bytesDownloaded.toFloat() / totalBytes).coerceIn(0f, 1f) else 0f
@@ -93,6 +95,7 @@ class XDownloadManager(
             subtitle = media.text.take(120),
             variant = variant,
             fileName = fileName,
+            sensitive = media.sensitive,
         )
         _tasks.value = listOf(task) + _tasks.value
         start(task.id)
@@ -267,6 +270,7 @@ class XDownloadManager(
         byteCount = task.bytesDownloaded,
         createdAt = System.currentTimeMillis(),
         completed = task.status == DownloadStatus.COMPLETED,
+        sensitive = task.sensitive || media?.sensitive == true,
     )
 
     private fun update(id: String, transform: (DownloadTask) -> DownloadTask) {

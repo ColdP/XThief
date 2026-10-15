@@ -40,6 +40,11 @@ data class TweetMedia(
     val text: String,
     val createdAt: String,
     val videos: List<VideoVariant>,
+    /**
+     * X flagged the post as sensitive (adult / graphic). Carried through to the download record and
+     * the media library so those surfaces can label or filter it later.
+     */
+    val sensitive: Boolean = false,
 ) {
     /** Highest quality first. */
     val sortedVariants: List<VideoVariant> get() = videos.sortedByDescending { it.sortKey }
@@ -59,6 +64,8 @@ data class DownloadRecord(
     val byteCount: Long,
     val createdAt: Long,
     val completed: Boolean,
+    /** The source post was flagged sensitive; drives library labelling / filtering. */
+    val sensitive: Boolean = false,
 )
 
 /** A downloaded file surfaced by the media library. */
@@ -73,6 +80,8 @@ data class MediaEntry(
     val width: Int = 0,
     val height: Int = 0,
     val source: MediaSource = MediaSource.LIBRARY,
+    /** True when the matching history record came from a sensitive post. */
+    val sensitive: Boolean = false,
 )
 
 enum class MediaSource { LIBRARY, HISTORY }

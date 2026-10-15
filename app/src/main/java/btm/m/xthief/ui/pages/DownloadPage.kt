@@ -44,9 +44,9 @@ import btm.m.xthief.ui.components.ActionRow
 import btm.m.xthief.ui.components.EmptyState
 import btm.m.xthief.ui.components.GlassChoiceRow
 import btm.m.xthief.ui.components.GlassDialogButton
+import btm.m.xthief.ui.components.GlassPrimaryButton
 import btm.m.xthief.ui.components.InfoRow
 import btm.m.xthief.ui.components.LocalPageBackdrop
-import btm.m.xthief.ui.components.PrimaryAction
 import btm.m.xthief.ui.components.SectionCard
 import btm.m.xthief.ui.components.WindowDialog
 import btm.m.xthief.ui.components.XThiefTextField
@@ -284,6 +284,8 @@ private fun ResultCard(
                 items = listOf("默认", "自定义"),
                 selectedIndex = destinationIndex,
                 backdrop = backdrop,
+                // Show where the file will actually land, whichever mode is selected.
+                summary = settings.effectiveDirectory,
                 onSelectedIndexChange = { index ->
                     if (index == 1) onChooseCustom() else onSelectDefault()
                 },
@@ -307,16 +309,10 @@ private fun ResultCard(
             }
 
             Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
-                PrimaryAction(
+                GlassPrimaryButton(
                     text = selected?.let { "下载 ${it.resolutionLabel}" } ?: "请选择画质",
                     enabled = selected != null,
                     onClick = onDownload,
-                )
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    text = "保存位置：${settings.effectiveDirectory}",
-                    style = MiuixTheme.textStyles.footnote2,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 )
             }
         }

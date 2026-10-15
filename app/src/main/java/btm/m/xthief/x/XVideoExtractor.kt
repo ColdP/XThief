@@ -4,6 +4,7 @@ package btm.m.xthief.x
 
 import btm.m.xthief.data.TweetMedia
 import btm.m.xthief.data.VideoVariant
+import btm.m.xthief.data.XThiefSettingsStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -25,26 +26,124 @@ class XExtractionException(message: String) : IOException(message)
  * the frequently rotated GraphQL query ids. A guest-token GraphQL call and a plain
  * page scrape are kept as fallbacks.
  */
-class XVideoExtractor {
+class XVideoExtractor(
+    /** Read for the optional cookie mode; null keeps the extractor fully anonymous. */
+    private val settingsStore: XThiefSettingsStore? = null,
+) {
+
+    /**
+     * Query id for `TweetResultByRestId`. X rotates these periodically, so it is only a starting
+     * point: on failure [refreshQueryId] re-derives the live value from X's web bundle.
+     */
+    @Volatile
+    private var liveQueryId: String? = null
+
+    /** Guards against downloading the bundle more than once per session. */
+    @Volatile
+    private var queryIdRefreshAttempted = false
+
+    /** Assembled login cookies, or null when cookie mode is off / the required pair is missing. */
+    private val cookie: String?
+        get() = settingsStore?.current?.cookieHeader
+
+    /** `ct0` mirrored as the `x-csrf-token` header, which X's GraphQL endpoint requires. */
+    private val csrfToken: String?
+        get() = settingsStore?.current?.cookieCsrfHeader
+
+    private val tweetResultUrl: String
+        get() = "$GRAPHQL_HOST/${liveQueryId ?: BUILT_IN_TWEET_QUERY_ID}/TweetResultByRestId"
 
     suspend fun resolve(tweetId: String): TweetMedia = withContext(Dispatchers.IO) {
         val syndication = runCatching { resolveThroughSyndication(tweetId) }
         syndication.getOrNull()?.let { return@withContext it }
 
+        // GraphQL runs before the v1.1 lookup: with cookies it is the route that reaches
+        // age-restricted media, while v1.1 answers 403 without a client-transaction id.
         val graphQl = runCatching { resolveThroughApi(tweetId) }
         graphQl.getOrNull()?.let { return@withContext it }
+
+        val cookieRoute = runCatching { resolveThroughCookieApi(tweetId) }
+        cookieRoute.getOrNull()?.let { return@withContext it }
 
         val scrape = runCatching { resolveThroughOpenGraph(tweetId) }
         scrape.getOrNull()?.let { return@withContext it }
 
-        val errors = listOfNotNull(
+        // Report every route so a failure is diagnosable instead of showing one misleading line.
+        val message = listOfNotNull(
             syndication.exceptionOrNull(),
             graphQl.exceptionOrNull(),
+            cookieRoute.exceptionOrNull(),
             scrape.exceptionOrNull(),
-        )
-        val message = errors.firstNotNullOfOrNull { it.message?.takeIf(String::isNotBlank) }
-            ?: "无法解析该推文"
+        ).mapNotNull { it.message?.takeIf(String::isNotBlank) }
+            .distinct()
+            .joinToString("；")
+            .ifBlank { "无法解析该推文" }
         throw XExtractionException(message)
+    }
+
+    // ------------------------------------------------------ cookie (v1.1) route
+
+    /**
+     * Looks the post up through x.com's internal v1.1 status API, authenticating with the user's
+     * cookies plus the web bearer token. Returns null (rather than throwing) when cookie mode is
+     * off, so the remaining routes still run.
+     *
+     * Both spellings of the endpoint are tried: they are equivalent, but X has been known to answer
+     * one and not the other depending on the session.
+     */
+    private fun resolveThroughCookieApi(tweetId: String): TweetMedia? {
+        if (cookie == null) return null
+        val urls = listOf(
+            "$STATUS_SHOW_URL?id=$tweetId&tweet_mode=extended&include_ext_alt_text=true",
+            "$STATUS_SHOW_ALT_URL/$tweetId.json?tweet_mode=extended",
+        )
+        var lastError: Throwable? = null
+        for (url in urls) {
+            val attempt = runCatching { fetchCookieTweet(tweetId, url) }
+            attempt.getOrNull()?.let { return it }
+            lastError = attempt.exceptionOrNull()
+        }
+        throw (lastError ?: XExtractionException("Cookies 解析失败"))
+    }
+
+    private fun fetchCookieTweet(tweetId: String, url: String): TweetMedia {
+        val payload = httpGet(url, bearer = BEARER, guestToken = null, accept = JSON_ACCEPT)
+        val root = runCatching { JSONObject(payload) }
+            .getOrElse { throw XExtractionException("Cookies 接口返回了无法解析的数据") }
+
+        val user = root.optJSONObject("user")
+        val handle = user?.optString("screen_name").orEmpty()
+        val displayName = user?.optString("name").orEmpty()
+        val sensitive = root.optBoolean("possibly_sensitive", false)
+
+        // v1.1 media objects share the syndication shape (`video_info.variants`).
+        val entities = root.optJSONObject("extended_entities")
+        val media = entities?.optJSONArray("media") ?: entities?.optJSONArray("media_entities")
+        val variants = media?.let(::parseSyndicationMedia).orEmpty().toMutableList()
+        if (variants.isEmpty()) {
+            media?.let(::findHlsMasterUrl)?.let { master ->
+                variants += runCatching { resolveHlsVariants(master) }.getOrDefault(emptyList())
+            }
+        }
+        if (variants.isEmpty()) {
+            throw XExtractionException(
+                if (sensitive) {
+                    "Cookies 已发送但未取到媒体，auth_token / ct0 可能已失效"
+                } else {
+                    "该推文不包含可下载的视频"
+                },
+            )
+        }
+
+        return TweetMedia(
+            tweetId = root.optString("id_str").ifBlank { tweetId },
+            author = displayName,
+            authorHandle = TweetLink.normalizeHandle(handle),
+            text = root.optString("full_text").replace('\n', ' ').trim(),
+            createdAt = root.optString("created_at"),
+            videos = variants,
+            sensitive = sensitive,
+        )
     }
 
     // --------------------------------------------------------- syndication route
@@ -67,6 +166,7 @@ class XVideoExtractor {
 
         val media = root.optJSONArray("mediaDetails")
             ?: root.optJSONArray("media_details")
+        val sensitive = root.optBoolean("possibly_sensitive", false)
         val variants = media?.let(::parseSyndicationMedia).orEmpty().toMutableList()
         // Long and sensitive posts often ship HLS only (no progressive MP4), so expand the
         // master playlist into per-resolution renditions before giving up.
@@ -78,10 +178,9 @@ class XVideoExtractor {
         if (variants.isEmpty()) {
             // Sensitive posts are frequently withheld from logged-out callers entirely, which
             // otherwise looks identical to "this post has no video".
-            val sensitive = root.optBoolean("possibly_sensitive", false)
             throw XExtractionException(
                 if (sensitive) {
-                    "该推文被标记为敏感内容，X 未向未登录请求返回媒体"
+                    "该推文被标记为敏感内容，X 未向未登录请求返回媒体；可在设置中开启「使用 Cookies 解析」"
                 } else {
                     "该推文不包含可下载的视频"
                 },
@@ -95,6 +194,7 @@ class XVideoExtractor {
             text = text,
             createdAt = createdAt,
             videos = variants,
+            sensitive = sensitive,
         )
     }
 
@@ -134,7 +234,8 @@ class XVideoExtractor {
                 }
                 variants += VideoVariant(
                     url = source,
-                    bitrate = variant.optInt("bitrate", 0),
+                    // v1.1 spells it `bit_rate`, syndication `bitrate`.
+                    bitrate = variant.optInt("bitrate", variant.optInt("bit_rate", 0)),
                     contentType = contentType.ifBlank { "video/mp4" },
                     width = resolution.first,
                     height = resolution.second,
@@ -147,14 +248,48 @@ class XVideoExtractor {
     // ------------------------------------------------------------ GraphQL route
 
     private fun resolveThroughApi(tweetId: String): TweetMedia? {
-        val token = fetchGuestToken()
-        val response = requestTweet(token, tweetId)
+        // Cookie mode authenticates the request directly; requesting a guest token as well would
+        // downgrade the session and hide age-restricted media.
+        val token = if (cookie != null) null else fetchGuestToken()
+        var response = requestTweet(token, tweetId)
+        if (response == null && refreshQueryId()) {
+            // The built-in query id had been rotated away; retry with the freshly derived one.
+            response = requestTweet(token, tweetId)
+        }
+        val body = response
             ?: throw XExtractionException("推文不存在、已删除或仅限登录可见")
-        val media = parseApiResponse(tweetId, response)
+        val media = parseApiResponse(tweetId, body)
         if (media.videos.isEmpty()) {
             throw XExtractionException("该推文不包含可下载的视频")
         }
         return media
+    }
+
+    /**
+     * Re-derives the current `TweetResultByRestId` query id from X's web bundle. Costs a ~1 MB
+     * download, so it runs at most once per session and only after a request has failed.
+     */
+    private fun refreshQueryId(): Boolean {
+        if (queryIdRefreshAttempted) return false
+        queryIdRefreshAttempted = true
+        val bundleUrl = runCatching {
+            val html = httpGet(
+                "https://x.com/",
+                bearer = null,
+                guestToken = null,
+                accept = HTML_ACCEPT,
+            )
+            Regex("""https://abs\.twimg\.com/[^"'\s]+/main\.[a-f0-9]+\.js""")
+                .find(html)?.value
+        }.getOrNull() ?: return false
+        val bundle = runCatching {
+            httpGet(bundleUrl, bearer = null, guestToken = null, accept = "*/*")
+        }.getOrNull() ?: return false
+        val id = Regex("""queryId:"([A-Za-z0-9_\-]{15,30})",operationName:"TweetResultByRestId"""")
+            .find(bundle)?.groupValues?.getOrNull(1)
+            ?.takeIf(String::isNotBlank) ?: return false
+        liveQueryId = id
+        return true
     }
 
     private fun fetchGuestToken(): String {
@@ -167,7 +302,7 @@ class XVideoExtractor {
         return token
     }
 
-    private fun requestTweet(token: String, tweetId: String): String? {
+    private fun requestTweet(token: String?, tweetId: String): String? {
         val variables = JSONObject()
             .put("tweetId", tweetId)
             .put("withCommunity", false)
@@ -178,7 +313,7 @@ class XVideoExtractor {
         val fieldToggles = JSONObject(FIELD_TOGGLES)
 
         val queryUrl = buildString {
-            append(TWEET_RESULT_URL)
+            append(tweetResultUrl)
             append("?variables=").append(encode(variables.toString()))
             append("&features=").append(encode(features.toString()))
             append("&fieldToggles=").append(encode(fieldToggles.toString()))
@@ -194,10 +329,17 @@ class XVideoExtractor {
 
     private fun parseApiResponse(tweetId: String, response: String): TweetMedia {
         val root = JSONObject(response)
-        val tweet = root.optJSONObject("data")
+        val result = root.optJSONObject("data")
             ?.optJSONObject("tweetResult")
             ?.optJSONObject("result")
             ?: throw XExtractionException("响应缺少推文数据")
+        // Age-restricted / sensitive posts come back wrapped; the media lives on the inner tweet,
+        // so reading `legacy` straight off the wrapper yields nothing.
+        val tweet = if (result.optString("__typename") == "TweetWithVisibilityResults") {
+            result.optJSONObject("tweet") ?: result
+        } else {
+            result
+        }
         val actualId = tweet.optString("rest_id").ifBlank { tweetId }
         val legacy = tweet.optJSONObject("legacy") ?: JSONObject()
 
@@ -245,6 +387,7 @@ class XVideoExtractor {
             text = legacy.optString("full_text").replace('\n', ' ').trim(),
             createdAt = legacy.optString("created_at"),
             videos = dedupe(variants),
+            sensitive = legacy.optBoolean("possibly_sensitive", false),
         )
     }
 
@@ -252,11 +395,15 @@ class XVideoExtractor {
 
     private fun resolveThroughOpenGraph(tweetId: String): TweetMedia {
         val url = "https://x.com/i/status/$tweetId"
-        val html = httpGet(url, bearer = null, guestToken = null, accept = HTML_ACCEPT)
+        val raw = httpGet(url, bearer = null, guestToken = null, accept = HTML_ACCEPT)
+        // The page embeds its tweet graph as escaped JSON, so direct media URLs appear as
+        // `https:\/\/video.twimg.com\/...`. Unescape first, otherwise `https://` never matches and
+        // posts without og:video tags (sensitive content) look like they have no video at all.
+        val html = raw.replace("\\/", "/")
         val variants = mutableListOf<VideoVariant>()
         VIDEO_META_PATTERNS.forEach { pattern ->
             pattern.findAll(html).forEach { match ->
-                val link = decodeHtml(match.groupValues[1])
+                val link = decodeHtml(match.groupValues[1]).trimEnd('\\')
                 if (link.isBlank()) return@forEach
                 if (link.contains("amplify_video_thumb")) return@forEach
                 if (link.contains(".m3u8")) return@forEach
@@ -437,6 +584,7 @@ class XVideoExtractor {
         bearer: String?,
         guestToken: String?,
         accept: String,
+        withCookie: Boolean = true,
     ): String {
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
@@ -449,6 +597,20 @@ class XVideoExtractor {
             setRequestProperty("Accept-Encoding", "gzip")
             bearer?.let { setRequestProperty("Authorization", "Bearer $it") }
             guestToken?.let { setRequestProperty("x-guest-token", it) }
+            // Cookie mode: lets signed-in-only posts (age-gated / protected) resolve.
+            if (withCookie) {
+                cookie?.let {
+                    setRequestProperty("Cookie", it)
+                    // x.com only treats the session as authenticated when these are present;
+                    // without them its internal endpoints answer 403.
+                    setRequestProperty("x-twitter-auth-type", "OAuth2Session")
+                    setRequestProperty("x-twitter-active-user", "yes")
+                    setRequestProperty("x-twitter-client-language", "en")
+                    setRequestProperty("Referer", "https://x.com/")
+                    setRequestProperty("Origin", "https://x.com")
+                }
+                csrfToken?.let { setRequestProperty("x-csrf-token", it) }
+            }
         }
         return connection.useConnection()
     }
@@ -510,8 +672,24 @@ class XVideoExtractor {
             "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D" +
                 "1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
         const val ACTIVATE_URL = "https://api.x.com/1.1/guest/activate.json"
-        const val TWEET_RESULT_URL =
-            "https://api.x.com/graphql/5GOHgZe-8nzEMqKZS4DaEg/TweetResultByRestId"
+
+        /** x.com's web GraphQL host; the query id is appended per request. */
+        const val GRAPHQL_HOST = "https://x.com/i/api/graphql"
+
+        /**
+         * Last known query id for `TweetResultByRestId`. X rotates these, so this is only a seed:
+         * [refreshQueryId] replaces it from the live web bundle when a request fails.
+         */
+        const val BUILT_IN_TWEET_QUERY_ID = "xZfFqfOmKQu_OXekGI59mg"
+
+        /**
+         * x.com's internal v1.1 status lookup. Needs no query id (unlike GraphQL) and, with the
+         * user's cookies, can read posts that are hidden from logged-out callers.
+         */
+        const val STATUS_SHOW_URL = "https://x.com/i/api/1.1/statuses/show.json"
+
+        /** Equivalent spelling of the same lookup (`/statuses/show/<id>.json`). */
+        const val STATUS_SHOW_ALT_URL = "https://x.com/i/api/1.1/statuses/show"
         const val SYNDICATION_URL = "https://cdn.syndication.twimg.com/tweet-result"
         const val SYNDICATION_TOKEN = "a"
         const val USER_AGENT =
@@ -524,7 +702,9 @@ class XVideoExtractor {
             Regex("""<meta[^>]+property="og:video(?::secure_url|:url)?"[^>]+content="([^"]+)"""", RegexOption.IGNORE_CASE),
             Regex("""<meta[^>]+content="([^"]+)"[^>]+property="og:video(?::secure_url|:url)?"""", RegexOption.IGNORE_CASE),
             Regex("""<meta[^>]+name="twitter:player:stream"[^>]+content="([^"]+)"""", RegexOption.IGNORE_CASE),
-            Regex(""""(https://video\.twimg\.com/[^"]+\.mp4[^"]*)"""", RegexOption.IGNORE_CASE),
+            // Any direct rendition URL in the embedded page data. Quotes are not required because
+            // the value sits inside escaped JSON, so the delimiter is often `\"` rather than `"`.
+            Regex("""(https://video\.twimg\.com/[^"\\\s]+\.mp4[^"\\\s]*)""", RegexOption.IGNORE_CASE),
         )
     }
 }

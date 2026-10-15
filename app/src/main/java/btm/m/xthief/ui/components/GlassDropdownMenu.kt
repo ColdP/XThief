@@ -117,6 +117,8 @@ fun GlassDropdownMenu(
     backdrop: Backdrop? = null,
     maxHeight: Dp? = null,
     showValueOnEnd: Boolean = false,
+    /** Overrides the subtitle; useful when the value is shown on the end instead. */
+    summaryOverride: String? = null,
 ) {
     val expanded = remember { mutableStateOf(false) }
     val entries = remember(entry) { listOf(entry) }
@@ -129,7 +131,7 @@ fun GlassDropdownMenu(
             modifier = Modifier.fillMaxWidth(),
             interactionSource = remember { MutableInteractionSource() },
             title = title,
-            summary = selectedSummary.takeUnless { showValueOnEnd },
+            summary = summaryOverride ?: selectedSummary.takeUnless { showValueOnEnd },
             endActions = {
                 if (showValueOnEnd && selectedSummary != null) {
                     Text(

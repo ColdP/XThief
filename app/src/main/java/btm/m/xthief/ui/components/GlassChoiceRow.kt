@@ -21,6 +21,8 @@ fun GlassChoiceRow(
     modifier: Modifier = Modifier,
     backdrop: Backdrop? = null,
     enabled: Boolean = true,
+    /** Subtitle shown under the title, independent of the selected value. */
+    summary: String? = null,
     onSelectedIndexChange: (Int) -> Unit,
 ) {
     if (items.isEmpty()) return
@@ -44,5 +46,6 @@ fun GlassChoiceRow(
         enabled = enabled,
         backdrop = backdrop,
         showValueOnEnd = true,
+        summaryOverride = summary,
     )
 }

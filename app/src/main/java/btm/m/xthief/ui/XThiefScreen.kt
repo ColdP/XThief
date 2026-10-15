@@ -89,6 +89,23 @@ fun XThiefScreen(
             libraryNavHidden = false
         }
     }
+
+    // Same staging for the download tab's selection toolbar.
+    var downloadSelecting by remember { mutableStateOf(false) }
+    var downloadNavHidden by remember { mutableStateOf(false) }
+    var downloadToolbarVisible by remember { mutableStateOf(false) }
+
+    LaunchedEffect(downloadSelecting) {
+        if (downloadSelecting) {
+            downloadNavHidden = true
+            delay(NavAnimationTiming.HIDE_MS.toLong())
+            downloadToolbarVisible = true
+        } else {
+            downloadToolbarVisible = false
+            delay(ToolbarAnimationTiming.EXIT_MS.toLong())
+            downloadNavHidden = false
+        }
+    }
     val dark = rememberDarkTheme(settings.appColorMode)
     var tab by remember { mutableStateOf(MainTab.PARSE) }
     var pageStack by remember { mutableStateOf<List<DetailPage>>(emptyList()) }
@@ -192,6 +209,8 @@ fun XThiefScreen(
                                 onClear = { container.historyStore.clear() },
                                 onOpen = { openUri(container, it.uri) },
                                 onShare = { shareRecord(container, it) },
+                                toolbarVisible = downloadToolbarVisible,
+                                onSelectionModeChange = { active -> downloadSelecting = active },
                             )
 
                             MainTab.LIBRARY -> LibraryPage(
@@ -277,7 +296,8 @@ fun XThiefScreen(
                             // Without this the liquid-glass style falls back to its built-in
                             // brand icon mapping and renders generic "dynamic" glyphs.
                             tabImageVector = { index -> MainTab.entries[index].icon },
-                            visible = !(tab == MainTab.LIBRARY && libraryNavHidden),
+                            visible = !(tab == MainTab.LIBRARY && libraryNavHidden) &&
+                                !(tab == MainTab.DOWNLOAD && downloadNavHidden),
                         )
                     }
 

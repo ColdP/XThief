@@ -17,7 +17,11 @@ import java.io.File
  * Scans the MediaStore video collection for files XThief wrote into its own
  * relative directories, so only app-downloaded media is listed.
  */
-class MediaLibrary(context: Context) {
+class MediaLibrary(
+    context: Context,
+    /** Used to label entries that came from sensitive posts. */
+    private val history: HistoryStore? = null,
+) {
     private val appContext = context.applicationContext
     private val _entries = MutableStateFlow<List<MediaEntry>>(emptyList())
     val entries: StateFlow<List<MediaEntry>> = _entries.asStateFlow()
@@ -35,7 +39,20 @@ class MediaLibrary(context: Context) {
         if (now - lastScanAt < SCAN_MIN_INTERVAL_MS) return
         lastScanAt = now
         val scanned = withContext(Dispatchers.IO) { query(scannedDirectories(directories)) }
-        _entries.value = scanned.sortedByDescending { it.addedAt }
+        // Stamp the sensitive flag from the download history so the library can label or filter
+        // these entries later; MediaStore itself carries no such metadata.
+        val sensitiveNames = history?.current.orEmpty()
+            .filter { it.sensitive }
+            .mapTo(hashSetOf()) { it.fileName }
+        _entries.value = scanned
+            .map { entry ->
+                if (!entry.sensitive && entry.fileName in sensitiveNames) {
+                    entry.copy(sensitive = true)
+                } else {
+                    entry
+                }
+            }
+            .sortedByDescending { it.addedAt }
     }
 
     private fun scannedDirectories(settingsDirectories: List<String>): List<String> {

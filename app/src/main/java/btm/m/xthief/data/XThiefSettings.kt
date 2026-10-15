@@ -87,6 +87,16 @@ data class XThiefSettings(
     val saveThumbnail: Boolean = false,
     val autoPasteFromClipboard: Boolean = true,
     val dynamicColorFromThumbnail: Boolean = false,
+    /** Sends the user's X login cookies while resolving, for age-gated or protected posts. */
+    val cookieEnabled: Boolean = false,
+    /** Required login credential (`auth_token`). */
+    val cookieAuthToken: String = "",
+    /** Required CSRF token (`ct0`); also sent as `x-csrf-token`. */
+    val cookieCsrfToken: String = "",
+    /** Optional user id (`twid`). */
+    val cookieUserId: String = "",
+    /** Optional guest id (`guest_id`). */
+    val cookieGuestId: String = "",
 ) {
     val navStyle: NavigationStyle get() = NavigationStyle.fromPreference(navigationStyle)
     val navLabelMode: LabelMode get() = LabelMode.fromPreference(labelMode)
@@ -98,6 +108,32 @@ data class XThiefSettings(
     /** Directory shown in the UI: the picked path, or the default Movies folder. */
     val effectiveDirectory: String
         get() = if (usesCustomDirectory && customDirectory.isNotBlank()) customDirectory else DEFAULT_SAVE_DIR
+
+    /** True when the two required cookie pieces are present. */
+    val cookieConfigured: Boolean
+        get() = cookieAuthToken.isNotBlank() && cookieCsrfToken.isNotBlank()
+
+    /**
+     * Assembled `Cookie` header for X requests, or null when cookie mode is off or the required
+     * `auth_token` / `ct0` pair is missing. Optional cookies are only included when filled in.
+     */
+    val cookieHeader: String?
+        get() {
+            if (!cookieEnabled || !cookieConfigured) return null
+            return buildList {
+                add("auth_token=${cookieAuthToken.trim()}")
+                add("ct0=${cookieCsrfToken.trim()}")
+                // twid is stored URL-encoded as `u=<id>`; accept a bare id from the user.
+                cookieUserId.filter(Char::isDigit).takeIf(String::isNotEmpty)?.let {
+                    add("twid=u%3D$it")
+                }
+                cookieGuestId.trim().takeIf(String::isNotEmpty)?.let { add("guest_id=$it") }
+            }.joinToString("; ")
+        }
+
+    /** Value for the `x-csrf-token` header, or null when cookie mode is not usable. */
+    val cookieCsrfHeader: String?
+        get() = cookieHeader?.let { cookieCsrfToken.trim() }
 }
 
 class XThiefSettingsStore(context: Context) {
@@ -131,6 +167,11 @@ class XThiefSettingsStore(context: Context) {
         saveThumbnail = prefs.getBoolean(KEY_SAVE_THUMBNAIL, false),
         autoPasteFromClipboard = prefs.getBoolean(KEY_AUTO_PASTE, true),
         dynamicColorFromThumbnail = prefs.getBoolean(KEY_DYNAMIC_COLOR, false),
+        cookieEnabled = prefs.getBoolean(KEY_COOKIE_ENABLED, false),
+        cookieAuthToken = prefs.getString(KEY_COOKIE_AUTH, null).orEmpty(),
+        cookieCsrfToken = prefs.getString(KEY_COOKIE_CSRF, null).orEmpty(),
+        cookieUserId = prefs.getString(KEY_COOKIE_USER, null).orEmpty(),
+        cookieGuestId = prefs.getString(KEY_COOKIE_GUEST, null).orEmpty(),
     )
 
     private fun write(value: XThiefSettings) {
@@ -152,6 +193,11 @@ class XThiefSettingsStore(context: Context) {
             .putBoolean(KEY_SAVE_THUMBNAIL, value.saveThumbnail)
             .putBoolean(KEY_AUTO_PASTE, value.autoPasteFromClipboard)
             .putBoolean(KEY_DYNAMIC_COLOR, value.dynamicColorFromThumbnail)
+            .putBoolean(KEY_COOKIE_ENABLED, value.cookieEnabled)
+            .putString(KEY_COOKIE_AUTH, value.cookieAuthToken)
+            .putString(KEY_COOKIE_CSRF, value.cookieCsrfToken)
+            .putString(KEY_COOKIE_USER, value.cookieUserId)
+            .putString(KEY_COOKIE_GUEST, value.cookieGuestId)
             .apply()
     }
 
@@ -186,6 +232,11 @@ private const val KEY_ISLAND_SIM_SECONDS = "island_simulation_seconds"
 private const val KEY_SAVE_THUMBNAIL = "save_thumbnail"
 private const val KEY_AUTO_PASTE = "auto_paste_clipboard"
 private const val KEY_DYNAMIC_COLOR = "dynamic_color_from_thumbnail"
+private const val KEY_COOKIE_ENABLED = "cookie_enabled"
+private const val KEY_COOKIE_AUTH = "cookie_auth_token"
+private const val KEY_COOKIE_CSRF = "cookie_ct0"
+private const val KEY_COOKIE_USER = "cookie_twid"
+private const val KEY_COOKIE_GUEST = "cookie_guest_id"
 
 /** Save-destination modes and the default MediaStore collection. */
 const val SAVE_DIR_DEFAULT = "default"

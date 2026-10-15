@@ -60,6 +60,7 @@ class HistoryStore(context: Context) {
                 byteCount = obj.optLong("byteCount"),
                 createdAt = obj.optLong("createdAt"),
                 completed = obj.optBoolean("completed", true),
+                sensitive = obj.optBoolean("sensitive", false),
             )
         }.sortedByDescending { it.createdAt }
     }.getOrDefault(emptyList())
@@ -80,7 +81,8 @@ class HistoryStore(context: Context) {
                     .put("uri", record.uri)
                     .put("byteCount", record.byteCount)
                     .put("createdAt", record.createdAt)
-                    .put("completed", record.completed),
+                    .put("completed", record.completed)
+                    .put("sensitive", record.sensitive),
             )
         }
         return array.toString()

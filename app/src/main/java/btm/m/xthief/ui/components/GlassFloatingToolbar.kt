@@ -102,6 +102,12 @@ fun GlassFloatingToolbarRow(content: @Composable () -> Unit) {
 }
 
 /**
+ * Blur radius the floating toolbar resolves out of as it appears. Shared by the pages that host
+ * one so the reveal looks identical everywhere.
+ */
+val TOOLBAR_MAX_BLUR = 12.dp
+
+/**
  * Floating-toolbar enter/exit durations, scaled to 85% of the original 220/160 ms. Exposed so the
  * host can wait for the toolbar to leave before bringing the bottom navigation back.
  */
