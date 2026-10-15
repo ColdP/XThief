@@ -512,6 +512,9 @@ private fun MediaCoverCard(
     Box(
         Modifier
             .fillMaxWidth()
+            // A fixed ratio per orientation keeps the staggered column predictable: landscape clips
+            // are rendered 3:2 and portrait ones 3:4, whatever the source video's real shape.
+            .aspectRatio(aspectRatioOf(entry))
             .clip(RoundedCornerShape(22.5.dp))
             .onSizeChanged { cardHeightPx = it.height }
             .combinedClickable(onClick = onClick, onLongClick = onLongPress),
@@ -525,9 +528,10 @@ private fun MediaCoverCard(
             Image(
                 bitmap = cover!!,
                 contentDescription = entry.displayName,
-                contentScale = ContentScale.FillWidth,
+                // The card is a fixed ratio, so the artwork is cropped to fill it.
+                contentScale = ContentScale.Crop,
                 modifier = Modifier
-                    .fillMaxWidth()
+                    .fillMaxSize()
                     .graphicsLayer {
                         renderEffect = if (
                             sensitiveBlurPx > .1f && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
@@ -554,10 +558,12 @@ private fun MediaCoverCard(
                     Image(
                         bitmap = cover!!,
                         contentDescription = null,
-                        contentScale = ContentScale.FillWidth,
+                        contentScale = ContentScale.Crop,
+                        // Cropping from the bottom keeps the strip showing the same pixels as the
+                        // full cover behind it, so the layers line up.
+                        alignment = Alignment.BottomCenter,
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .align(Alignment.BottomCenter)
+                            .fillMaxSize()
                             .then(
                                 if (blurCover) {
                                     Modifier.graphicsLayer {
@@ -695,14 +701,25 @@ private fun durationLabel(millis: Long): String {
 }
 
 /** Share of the card height taken by the frosted caption strip. */
-private const val BAND_HEIGHT_FRACTION = 0.44f
+private const val BAND_HEIGHT_FRACTION = 0.38f
 
-/** Clamps so the strip stays legible on a short landscape clip and doesn't swallow a tall one. */
-private val MIN_BAND_HEIGHT = 56.dp
-private val MAX_BAND_HEIGHT = 148.dp
+/** Clamps so the strip stays legible on a short landscape card and never swallows a tall one. */
+private val MIN_BAND_HEIGHT = 62.dp
+private val MAX_BAND_HEIGHT = 96.dp
 
 /** Used for the first frame, before the card has reported its measured height. */
-private val FALLBACK_BAND_HEIGHT = 84.dp
+private val FALLBACK_BAND_HEIGHT = 76.dp
+
+/**
+ * Card aspect ratios (width / height). Landscape clips are boxed to 3:2 and portrait ones to 3:4,
+ * so the two-column layout keeps a consistent rhythm instead of following every video's own shape.
+ */
+private const val LANDSCAPE_ASPECT = 3f / 2f
+private const val PORTRAIT_ASPECT = 3f / 4f
+
+/** Portrait when the video is taller than it is wide. */
+private fun aspectRatioOf(entry: MediaEntry): Float =
+    if (entry.height > entry.width && entry.width > 0) PORTRAIT_ASPECT else LANDSCAPE_ASPECT
 
 /** Blur applied to the cover of a sensitive entry, so the whole card is evenly obscured. */
 private val SENSITIVE_BLUR = 26.dp

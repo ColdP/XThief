@@ -335,7 +335,8 @@ class XVideoExtractor(
             ?: throw XExtractionException("响应缺少推文数据")
         // Age-restricted / sensitive posts come back wrapped; the media lives on the inner tweet,
         // so reading `legacy` straight off the wrapper yields nothing.
-        val tweet = if (result.optString("__typename") == "TweetWithVisibilityResults") {
+        val wrappedForVisibility = result.optString("__typename") == "TweetWithVisibilityResults"
+        val tweet = if (wrappedForVisibility) {
             result.optJSONObject("tweet") ?: result
         } else {
             result
@@ -387,7 +388,9 @@ class XVideoExtractor(
             text = legacy.optString("full_text").replace('\n', ' ').trim(),
             createdAt = legacy.optString("created_at"),
             videos = dedupe(variants),
-            sensitive = legacy.optBoolean("possibly_sensitive", false),
+            // X wraps age-restricted posts in TweetWithVisibilityResults even when the author never
+            // marked them sensitive, so the wrapper itself is the stronger signal.
+            sensitive = wrappedForVisibility || legacy.optBoolean("possibly_sensitive", false),
         )
     }
 
