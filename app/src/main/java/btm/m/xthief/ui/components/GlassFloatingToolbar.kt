@@ -43,6 +43,12 @@ fun GlassFloatingToolbar(
     cornerRadius: Dp = 50.dp,
     /** Shadow colour. The theme default is grey on light themes, which shows as a pale block. */
     shadowTint: Color? = null,
+    /**
+     * Strength of the glass highlight. The highlight is an edge-lit white sheen, so blurring it
+     * during a hide/show animation smears it into a white patch; callers that animate can scale
+     * this down with the same progress.
+     */
+    highlightAlpha: Float = .70f,
     content: @Composable () -> Unit,
 ) {
     // Scaffold's floatingToolbar slot sits outside the topBar's LocalToolbarBackdrop provider,
@@ -77,7 +83,7 @@ fun GlassFloatingToolbar(
                 blur(3.dp.toPx())
                 lens(12.dp.toPx(), 32.dp.toPx(), chromaticAberration = true)
             },
-            highlight = { Highlight.Default.copy(alpha = .70f) },
+            highlight = { Highlight.Default.copy(alpha = highlightAlpha) },
             shadow = {
                 Shadow.Default.copy(
                     radius = 12.dp,

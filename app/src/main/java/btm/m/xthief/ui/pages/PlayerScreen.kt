@@ -5,6 +5,7 @@ package btm.m.xthief.ui.pages
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.graphics.SurfaceTexture
 import android.media.AudioAttributes
@@ -31,11 +32,13 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -53,10 +56,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -69,7 +75,11 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.kyant.backdrop.drawPlainBackdrop
+import com.kyant.backdrop.effects.blur
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.LinearProgressIndicator
@@ -150,6 +160,38 @@ private val CHROME_HIDE_BLUR = 16.dp
 /** How close the player must get to a requested position before polling resumes from it. */
 private const val SEEK_SETTLE_MS = 1_200L
 
+/** Top bar: a very transparent blur, tinted with a colour sampled from the video's top strip. */
+private val TOP_BLUR = 28.dp
+private const val TOP_TINT_ALPHA = .18f
+private const val TINT_REFRESH_MS = 1_200L
+private const val TITLE_INK_THRESHOLD = .55f
+private val TOP_BAR_SAMPLE_HEIGHT = 64.dp
+
+/** Average colour of a bitmap, sampled sparsely — enough for a stable tint, far cheaper. */
+private fun averageColorOf(bitmap: Bitmap): Color {
+    val pixels = IntArray(bitmap.width * bitmap.height)
+    bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+    var red = 0L
+    var green = 0L
+    var blue = 0L
+    var count = 0
+    var index = 0
+    while (index < pixels.size) {
+        val pixel = pixels[index]
+        red += (pixel shr 16) and 0xFF
+        green += (pixel shr 8) and 0xFF
+        blue += pixel and 0xFF
+        count++
+        index += 37
+    }
+    if (count == 0) return Color.Black
+    return Color(
+        red = (red / count).toInt().coerceIn(0, 255),
+        green = (green / count).toInt().coerceIn(0, 255),
+        blue = (blue / count).toInt().coerceIn(0, 255),
+    )
+}
+
 /**
  * The built-in player.
  *
@@ -169,6 +211,7 @@ fun PlayerScreen(
 ) {
     val context = LocalContext.current
     val view = LocalView.current
+    val density = LocalDensity.current
     val backdrop = rememberLayerBackdrop()
     val scroll = MiuixScrollBehavior()
     val surface = MiuixTheme.colorScheme.surface
@@ -188,6 +231,35 @@ fun PlayerScreen(
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
     var chromeVisible by remember { mutableStateOf(true) }
+
+    // Sample the video's top strip (behind the status bar) so the title ink and the blur tint
+    // always match what is actually behind them, and re-sample as playback moves on.
+    var textureView by remember { mutableStateOf<TextureView?>(null) }
+    var topTint by remember { mutableStateOf(Color.Black) }
+    val statusBarPx = WindowInsets.statusBars.getTop(density)
+    val sampleHeightPx = statusBarPx + with(density) { TOP_BAR_SAMPLE_HEIGHT.roundToPx() }
+
+    LaunchedEffect(textureView, sampleHeightPx) {
+        while (true) {
+            val view = textureView
+            if (view != null && view.isAvailable && view.width > 0 && view.height > 0) {
+                val sampled = withContext(Dispatchers.IO) {
+                    runCatching {
+                        // The two-argument overload reads from the top-left corner, which is exactly
+                        // the strip under the status bar.
+                        val height = sampleHeightPx.coerceIn(1, view.height)
+                        val bitmap = view.getBitmap(view.width, height) ?: return@runCatching null
+                        val color = averageColorOf(bitmap)
+                        bitmap.recycle()
+                        color
+                    }.getOrNull()
+                }
+                if (sampled != null) topTint = sampled
+            }
+            delay(TINT_REFRESH_MS)
+        }
+    }
+    val titleInk = if (topTint.luminance() > TITLE_INK_THRESHOLD) Color.Black else Color.White
 
     val chromeProgress by animateFloatAsState(
         targetValue = if (chromeVisible) 1f else 0f,
@@ -279,6 +351,7 @@ fun PlayerScreen(
                 AndroidView(
                     factory = { ctx ->
                         TextureView(ctx).apply {
+                            textureView = this
                             surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                                 override fun onSurfaceTextureAvailable(
                                     texture: SurfaceTexture,
@@ -380,31 +453,37 @@ fun PlayerScreen(
             ) {
                 BlurFadeContent(visible = chromeVisible, maxBlur = 12.dp, minAlpha = 0f) {
                     Box {
-                        TopBarMaterial(
-                            backdrop = backdrop,
-                            surface = surface,
-                            progress = 1f,
-                            tintedWhenExpanded = false,
+                        // A very transparent blur with a tint sampled from the video's top strip:
+                        // no gradient scrim, and the tint is refreshed as playback moves on.
+                        Box(
+                            Modifier
+                                .matchParentSize()
+                                .drawPlainBackdrop(
+                                    backdrop = backdrop,
+                                    shape = { RectangleShape },
+                                    effects = { blur(TOP_BLUR.toPx()) },
+                                    onDrawSurface = {
+                                        drawRect(topTint.copy(alpha = TOP_TINT_ALPHA))
+                                    },
+                                ),
                         )
-                        // SmallTopAppBar is MIUIX's collapsed bar (it has no largeTitle slot at
-                        // all), so it is the correct component for a title bar that starts
-                        // collapsed. title/subtitle are its own slots: the bar owns the window
-                        // insets and the text layout, which is why an overlay on top of it
-                        // collided with the status bar.
                         SmallTopAppBar(
                             title = source.title,
                             subtitle = source.subtitle,
                             color = Color.Transparent,
+                            titleColor = titleInk,
+                            subtitleColor = titleInk.copy(alpha = .70f),
                             scrollBehavior = scroll,
                             navigationIcon = {
-                                GlassToolbarIconButton(
-                                    icon = MiuixIcons.Regular.ChevronBackward,
-                                    description = "返回",
-                                    backdrop = backdrop,
-                                    collapsedFraction = 1f,
-                                    containerPadding = PaddingValues(start = 8.dp),
-                                    onClick = onBack,
-                                )
+                                // Plain icon, no liquid-glass capsule, per the MIUIX top bar spec.
+                                IconButton(onClick = onBack) {
+                                    Icon(
+                                        MiuixIcons.Regular.ChevronBackward,
+                                        "返回",
+                                        Modifier.size(NAV_ICON_SIZE),
+                                        tint = titleInk,
+                                    )
+                                }
                             },
                         )
                     }
@@ -431,6 +510,10 @@ fun PlayerScreen(
                     positionMs = if (isScrubbing) scrubMs else positionMs,
                     durationMs = durationMs,
                     scrubbing = isScrubbing,
+                    // No highlight at all: the floating navigation bar omits it too
+                    // (advancedMaterial defaults to false), and blurring an edge-lit sheen is what
+                    // produced the white patch during the hide/show animation.
+                    highlightAlpha = 0f,
                     onTogglePlay = { togglePlayback(player) { isPlaying = it } },
                     onToggleMute = {
                         val next = !isMuted
@@ -455,6 +538,7 @@ fun PlayerScreen(
 
                 PlayerActionToolbar(
                     favorite = favorite,
+                    highlightAlpha = 0f,
                     onToggleFavorite = onToggleFavorite,
                     onOpenWith = onOpenWith,
                     onInfo = onInfo,
@@ -506,6 +590,7 @@ private fun PlayerTransportCard(
     positionMs: Long,
     durationMs: Long,
     scrubbing: Boolean,
+    highlightAlpha: Float,
     onTogglePlay: () -> Unit,
     onToggleMute: () -> Unit,
     onScrubStart: () -> Unit,
@@ -530,6 +615,7 @@ private fun PlayerTransportCard(
         surfaceTint = PLAYER_GLASS_TINT,
         cornerRadius = cardRadius,
         shadowTint = Color.Black,
+        highlightAlpha = highlightAlpha,
     ) {
         Column(
             Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 6.dp),
@@ -624,6 +710,7 @@ private fun PlayerTransportCard(
 @Composable
 private fun PlayerActionToolbar(
     favorite: Boolean,
+    highlightAlpha: Float,
     onToggleFavorite: () -> Unit,
     onOpenWith: () -> Unit,
     onInfo: () -> Unit,
@@ -634,6 +721,7 @@ private fun PlayerActionToolbar(
         modifier = Modifier.fillMaxWidth(NAV_WIDTH_FRACTION).height(NAV_HEIGHT),
         surfaceTint = PLAYER_GLASS_TINT,
         shadowTint = Color.Black,
+        highlightAlpha = highlightAlpha,
     ) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 2.dp),
