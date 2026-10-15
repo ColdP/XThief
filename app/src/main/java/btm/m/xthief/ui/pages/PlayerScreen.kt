@@ -16,9 +16,11 @@ import android.net.Uri
 import android.view.Surface
 import android.view.TextureView
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
@@ -54,6 +56,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -86,6 +89,7 @@ import com.kyant.backdrop.drawPlainBackdrop
 import com.kyant.backdrop.effects.blur
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
@@ -164,6 +168,9 @@ private val CHROME_HIDE_BLUR = 16.dp
 
 /** Fraction of the screen height a swipe must cover to change clip in short-video mode. */
 private const val SWIPE_THRESHOLD_FRACTION = .12f
+
+/** Duration of the swipe-out and swipe-in halves of a clip change. */
+private const val SWIPE_ANIM_MS = 240
 
 /** How close the player must get to a requested position before polling resumes from it. */
 private const val SEEK_SETTLE_MS = 1_200L
@@ -248,6 +255,7 @@ fun PlayerScreen(
     val view = LocalView.current
     val density = LocalDensity.current
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val scope = rememberCoroutineScope()
     val backdrop = rememberLayerBackdrop()
     val scroll = MiuixScrollBehavior()
     val surface = MiuixTheme.colorScheme.surface
@@ -268,8 +276,8 @@ fun PlayerScreen(
     var viewSize by remember { mutableStateOf(IntSize.Zero) }
     var scale by remember { mutableFloatStateOf(1f) }
     val zoomedIn = scale > 1f
-    /** Accumulated vertical drag, used to decide whether a swipe changes clip. */
-    var swipeAccum by remember { mutableFloatStateOf(0f) }
+    /** Vertical offset of the picture while a short-video swipe is in flight. */
+    val swipeOffset = remember { Animatable(0f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
     var chromeVisible by remember { mutableStateOf(true) }
 
@@ -356,7 +364,8 @@ fun PlayerScreen(
         onDispose {
             runCatching { media.release() }
             player = null
-            drawSurface = null
+            // The Surface itself stays valid: onSurfaceTextureAvailable only fires once per
+            // TextureView, so clearing this would leave the next clip with audio but no picture.
         }
     }
 
@@ -411,8 +420,14 @@ fun PlayerScreen(
         // Publish this page's backdrop so the shared glass components sample the video instead of
         // falling back to a flat tint.
         CompositionLocalProvider(LocalPageBackdrop provides backdrop) {
-            // Recorded once here; the glass bars above sample this backdrop.
-            Box(Modifier.fillMaxSize().layerBackdrop(backdrop)) {
+            // Recorded once here; the glass bars above sample this backdrop. The picture follows
+            // the finger during a short-video swipe, while the chrome stays put.
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .graphicsLayer { translationY = swipeOffset.value }
+                    .layerBackdrop(backdrop),
+            ) {
                 AndroidView(
                     factory = { ctx ->
                         TextureView(ctx).apply {
@@ -506,17 +521,43 @@ fun PlayerScreen(
                         // In short-video mode an un-zoomed vertical swipe changes clip; zoomed in,
                         // the same drag pans the picture instead.
                         if (shortVideoMode && !zoomedIn) {
+                            var accumulated = 0f
                             detectVerticalDragGestures(
-                                onDragCancel = { swipeAccum = 0f },
+                                onDragStart = { accumulated = 0f },
+                                onDragCancel = {
+                                    accumulated = 0f
+                                    scope.launch { swipeOffset.animateTo(0f, spring()) }
+                                },
+                                onVerticalDrag = { _, amount ->
+                                    accumulated += amount
+                                    // Track the finger directly, so the picture follows the drag.
+                                    scope.launch { swipeOffset.snapTo(swipeOffset.value + amount) }
+                                },
                                 onDragEnd = {
                                     val threshold = size.height * SWIPE_THRESHOLD_FRACTION
-                                    if (kotlin.math.abs(swipeAccum) > threshold) {
+                                    val span = size.height.toFloat()
+                                    if (kotlin.math.abs(accumulated) > threshold) {
                                         // Swiping up advances, like a feed.
-                                        onSwitchVideo(if (swipeAccum < 0f) 1 else -1)
+                                        val up = accumulated < 0f
+                                        val exit = if (up) -span else span
+                                        scope.launch {
+                                            swipeOffset.animateTo(
+                                                exit,
+                                                tween(SWIPE_ANIM_MS, easing = FastOutSlowInEasing),
+                                            )
+                                            onSwitchVideo(if (up) 1 else -1)
+                                            // The arriving clip enters from the opposite edge.
+                                            swipeOffset.snapTo(-exit)
+                                            swipeOffset.animateTo(
+                                                0f,
+                                                tween(SWIPE_ANIM_MS, easing = FastOutSlowInEasing),
+                                            )
+                                        }
+                                    } else {
+                                        scope.launch { swipeOffset.animateTo(0f, spring()) }
                                     }
-                                    swipeAccum = 0f
+                                    accumulated = 0f
                                 },
-                                onVerticalDrag = { _, amount -> swipeAccum += amount },
                             )
                         } else {
                             detectTransformGestures { _, pan, zoom, _ ->
