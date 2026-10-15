@@ -40,6 +40,8 @@ fun GlassFloatingToolbar(
     surfaceTint: Color? = null,
     /** Capsule by default; the player switches to a rounded rectangle while scrubbing. */
     cornerRadius: Dp = 50.dp,
+    /** Shadow colour. The theme default is grey on light themes, which shows as a pale block. */
+    shadowTint: Color? = null,
     content: @Composable () -> Unit,
 ) {
     // Scaffold's floatingToolbar slot sits outside the topBar's LocalToolbarBackdrop provider,
@@ -63,7 +65,7 @@ fun GlassFloatingToolbar(
     val isLightTheme = surface.luminance() > .5f
     val tint = surfaceTint
         ?: (if (isLightTheme) Color(0xFFF8F8F8) else surface).copy(alpha = .80f)
-    val shadowColor = if (isLightTheme) Color.Gray else Color.Black
+    val shadowColor = shadowTint ?: if (isLightTheme) Color.Gray else Color.Black
     val shape = RoundedCornerShape(cornerRadius)
     val glassModifier = if (backdrop != null) {
         Modifier.drawBackdrop(

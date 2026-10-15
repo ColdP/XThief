@@ -81,6 +81,11 @@ fun BlurFadeContent(
     maxBlur: Dp? = null,
     /** Set false when placing this inside a Row, so it wraps its content instead of filling. */
     fillWidth: Boolean = true,
+    /**
+     * Alpha the content settles at once hidden. The default keeps a hint of the element (used by
+     * collapsible rows), while the player passes 0 so its chrome disappears completely.
+     */
+    minAlpha: Float = .55f,
     content: @Composable () -> Unit,
 ) {
     val settled by animateFloatAsState(
@@ -99,7 +104,7 @@ fun BlurFadeContent(
         modifier
             .then(if (fillWidth) Modifier.fillMaxWidth() else Modifier)
             .onSizeChanged { heightPx = it.height }
-            .graphicsLayer { alpha = .55f + .45f * settled.coerceIn(0f, 1f) }
+            .graphicsLayer { alpha = minAlpha + (1f - minAlpha) * settled.coerceIn(0f, 1f) }
             .then(if (radius > .1.dp) Modifier.blur(radius) else Modifier),
     ) {
         content()
