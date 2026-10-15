@@ -86,6 +86,7 @@ import top.yukonga.miuix.kmp.icon.extended.Delete
 import top.yukonga.miuix.kmp.icon.extended.Download
 import top.yukonga.miuix.kmp.icon.extended.Pause
 import top.yukonga.miuix.kmp.icon.extended.Play
+import top.yukonga.miuix.kmp.icon.extended.Recent
 import top.yukonga.miuix.kmp.icon.extended.Refresh
 import top.yukonga.miuix.kmp.icon.extended.SelectAll
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -246,10 +247,12 @@ fun HistoryPage(
                     title = "还没有下载任务",
                     description = "在「解析」页填入 X（Twitter）视频链接并选择画质，任务就会出现在这里；下载完成的视频会按日期归档。",
                     icon = {
-                        androidx.compose.foundation.Image(
-                            painter = painterResource(btm.m.xthief.R.drawable.ic_xthief_sp),
+                        // Vector + theme tint, matching the other empty states and dark mode.
+                        Icon(
+                            MiuixIcons.Regular.Recent,
                             contentDescription = null,
-                            modifier = Modifier.size(48.dp),
+                            modifier = Modifier.size(40.dp),
+                            tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                         )
                     },
                 )

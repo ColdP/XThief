@@ -56,6 +56,7 @@ import btm.m.xthief.ui.toast
 import btm.m.xthief.x.TweetLink
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
+import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Backup
@@ -198,10 +199,12 @@ fun DownloadTab(
                     description = error
                         ?: "点上方「下载链接」填入 X（Twitter）视频链接，再点「解析视频」获取全部画质；也可以直接从 X 分享链接给 XThief。",
                     icon = {
-                        androidx.compose.foundation.Image(
-                            imageVector = MiuixIcons.Regular.Backup,
+                        // Icon tints from the theme, so it stays visible in dark mode.
+                        Icon(
+                            MiuixIcons.Regular.Backup,
                             contentDescription = null,
                             modifier = Modifier.size(40.dp),
+                            tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                         )
                     },
                 )

@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridItemSpan
 import androidx.compose.foundation.lazy.staggeredgrid.items as staggeredItems
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -400,7 +401,8 @@ fun LibraryPage(
         staggeredContent = if (viewMode == LIBRARY_VIEW_GRID) {
             {
                 if (visibleEntries.isEmpty()) {
-                    item {
+                    // FullLine so the placeholder spans both columns instead of sitting in one.
+                    item(span = StaggeredGridItemSpan.FullLine) {
                         EmptyLibraryState(directory, MiuixIcons.Regular.Photos)
                     }
                 } else {
@@ -673,10 +675,12 @@ private fun EmptyLibraryState(directory: String, icon: ImageVector) {
         title = "媒体库是空的",
         description = "下载完成的视频会自动出现在这里。也可以点右上角刷新，重新扫描 $directory。",
         icon = {
-            androidx.compose.foundation.Image(
-                imageVector = icon,
+            // Icon, not Image: it tints from the theme, so the glyph is visible in dark mode too.
+            Icon(
+                icon,
                 contentDescription = null,
                 modifier = Modifier.size(40.dp),
+                tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
             )
         },
     )
