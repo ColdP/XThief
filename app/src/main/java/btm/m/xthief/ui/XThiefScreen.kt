@@ -494,6 +494,7 @@ fun XThiefScreen(
                                 source = source,
                                 favorite = record?.favorite == true,
                                 shortVideoMode = settings.shortVideoMode,
+                                hdrEnabled = settings.hdrPlayback,
                                 onSwitchVideo = { direction ->
                                     val index = playerQueue.indexOfFirst { it.uri == source.uri }
                                     if (index >= 0) {

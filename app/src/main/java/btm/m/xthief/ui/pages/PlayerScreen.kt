@@ -43,6 +43,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -261,6 +262,8 @@ fun PlayerScreen(
     favorite: Boolean,
     /** When true, a vertical swipe moves to the previous/next clip. */
     shortVideoMode: Boolean = false,
+    /** When false, HDR clips are played through the TextureView so the glass bars keep sampling. */
+    hdrEnabled: Boolean = true,
     /** -1 = previous clip, +1 = next clip. */
     onSwitchVideo: (Int) -> Unit = {},
     onToggleFavorite: () -> Unit,
@@ -290,7 +293,14 @@ fun PlayerScreen(
     var videoHeight by remember { mutableIntStateOf(0) }
     /** HDR clips need a SurfaceView, which the glass bars cannot sample. */
     var isHdr by remember(source.uri) { mutableStateOf(false) }
-    val useSurfaceView = isHdr
+    // Only take the SurfaceView path when the user has left HDR playback enabled.
+    val useSurfaceView = isHdr && hdrEnabled
+    /** Fills the incoming frame's shape until the clip reports its real size. */
+    val videoAspectModifier = if (videoWidth > 0 && videoHeight > 0) {
+        Modifier.aspectRatio(videoWidth.toFloat() / videoHeight)
+    } else {
+        Modifier.fillMaxSize()
+    }
     /** Position a seek is heading to; -1 when idle. Keeps the poll from undoing the seek. */
     var pendingSeekMs by remember { mutableLongStateOf(-1L) }
     /** Measured size of the video surface, so the letterbox follows rotation. */
@@ -480,6 +490,7 @@ fun PlayerScreen(
                     .fillMaxSize()
                     .graphicsLayer { translationY = swipeOffset.value }
                     .layerBackdrop(backdrop),
+                contentAlignment = Alignment.Center,
             ) {
                 // HDR clips get a SurfaceView so the layer reaches the display untouched; SDR
                 // clips keep the TextureView so the glass bars can still sample the picture.
@@ -508,12 +519,18 @@ fun PlayerScreen(
                                 }
                             },
                             update = { surfaceView ->
-                                // A SurfaceView has no transform matrix, so the picture is letterboxed
-                                // by the player itself.
-                                surfaceView.holder.setFixedSize(videoWidth, videoHeight)
+                                // The letterbox comes from the view's own size (see the modifier),
+                                // and SCALE_TO_FIT keeps the frame from being cropped to it.
+                                runCatching {
+                                    player?.setVideoScalingMode(
+                                        MediaPlayer.VIDEO_SCALING_MODE_SCALE_TO_FIT,
+                                    )
+                                }
                             },
                             modifier = Modifier
-                                .fillMaxSize()
+                                // Sized to the clip's aspect ratio and centred, so black bars are
+                                // the surrounding Box rather than a stretched picture.
+                                .then(videoAspectModifier)
                                 .onSizeChanged { viewSize = it }
                                 .graphicsLayer {
                                     scaleX = scale
