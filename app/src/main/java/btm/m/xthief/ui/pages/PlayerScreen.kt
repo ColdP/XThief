@@ -57,6 +57,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -88,6 +89,7 @@ import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.kyant.backdrop.drawPlainBackdrop
 import com.kyant.backdrop.effects.blur
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -278,6 +280,14 @@ fun PlayerScreen(
     val zoomedIn = scale > 1f
     /** Vertical offset of the picture while a short-video swipe is in flight. */
     val swipeOffset = remember { Animatable(0f) }
+    /** Offset the current drag started from, plus how far it has travelled since. */
+    var dragBase by remember { mutableFloatStateOf(0f) }
+    var dragTotal by remember { mutableFloatStateOf(0f) }
+    var dragJob by remember { mutableStateOf<Job?>(null) }
+    // The gesture block is keyed on (zoomedIn, shortVideoMode), which do not change when the clip
+    // does, so it would keep the first lambda and its stale `source`. Reading through
+    // rememberUpdatedState keeps switching correct for every swipe after the first.
+    val currentSwitchVideo by rememberUpdatedState(onSwitchVideo)
     var offset by remember { mutableStateOf(Offset.Zero) }
     var chromeVisible by remember { mutableStateOf(true) }
 
@@ -521,42 +531,56 @@ fun PlayerScreen(
                         // In short-video mode an un-zoomed vertical swipe changes clip; zoomed in,
                         // the same drag pans the picture instead.
                         if (shortVideoMode && !zoomedIn) {
-                            var accumulated = 0f
                             detectVerticalDragGestures(
-                                onDragStart = { accumulated = 0f },
+                                onDragStart = {
+                                    // Anchor to wherever the previous animation left off.
+                                    dragJob?.cancel()
+                                    dragBase = swipeOffset.value
+                                    dragTotal = 0f
+                                },
                                 onDragCancel = {
-                                    accumulated = 0f
-                                    scope.launch { swipeOffset.animateTo(0f, spring()) }
+                                    dragJob?.cancel()
+                                    dragTotal = 0f
+                                    dragJob = scope.launch { swipeOffset.animateTo(0f, spring()) }
                                 },
                                 onVerticalDrag = { _, amount ->
-                                    accumulated += amount
-                                    // Track the finger directly, so the picture follows the drag.
-                                    scope.launch { swipeOffset.snapTo(swipeOffset.value + amount) }
+                                    dragTotal += amount
+                                    // Cancel the previous snap before issuing the next one and always
+                                    // write an absolute value: firing one coroutine per pointer event
+                                    // raced, and a dropped settle left the picture parked off-screen.
+                                    dragJob?.cancel()
+                                    dragJob = scope.launch {
+                                        swipeOffset.snapTo(dragBase + dragTotal)
+                                    }
                                 },
                                 onDragEnd = {
+                                    dragJob?.cancel()
+                                    val travelled = dragTotal
+                                    dragTotal = 0f
                                     val threshold = size.height * SWIPE_THRESHOLD_FRACTION
                                     val span = size.height.toFloat()
-                                    if (kotlin.math.abs(accumulated) > threshold) {
+                                    if (kotlin.math.abs(travelled) > threshold) {
                                         // Swiping up advances, like a feed.
-                                        val up = accumulated < 0f
+                                        val up = travelled < 0f
                                         val exit = if (up) -span else span
-                                        scope.launch {
+                                        dragJob = scope.launch {
                                             swipeOffset.animateTo(
                                                 exit,
                                                 tween(SWIPE_ANIM_MS, easing = FastOutSlowInEasing),
                                             )
-                                            onSwitchVideo(if (up) 1 else -1)
+                                            currentSwitchVideo(if (up) 1 else -1)
                                             // The arriving clip enters from the opposite edge.
                                             swipeOffset.snapTo(-exit)
                                             swipeOffset.animateTo(
                                                 0f,
                                                 tween(SWIPE_ANIM_MS, easing = FastOutSlowInEasing),
                                             )
+                                            // Guarantee the resting state even if this was cancelled.
+                                            swipeOffset.snapTo(0f)
                                         }
                                     } else {
-                                        scope.launch { swipeOffset.animateTo(0f, spring()) }
+                                        dragJob = scope.launch { swipeOffset.animateTo(0f, spring()) }
                                     }
-                                    accumulated = 0f
                                 },
                             )
                         } else {
