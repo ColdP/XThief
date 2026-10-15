@@ -97,8 +97,15 @@ data class XThiefSettings(
     val cookieUserId: String = "",
     /** Optional guest id (`guest_id`). */
     val cookieGuestId: String = "",
-    /** Raw `Cookie:` header sent to YouTube; needed for age-restricted or members-only videos. */
-    val youtubeCookie: String = "",
+    /**
+     * YouTube cookies, entered field by field like the browser's cookie table lists them.
+     * `SID` is the one that matters; the rest are what YouTube's account auth actually checks.
+     */
+    val youtubeSid: String = "",
+    val youtubeHsid: String = "",
+    val youtubeSsid: String = "",
+    val youtubeApisid: String = "",
+    val youtubeSapisid: String = "",
     /**
      * Bilibili cookies, entered one field at a time the way a browser's cookie table lists them.
      * `SESSDATA` alone is usually enough; `bili_jct` and `DedeUserID` are optional extras.
@@ -167,6 +174,25 @@ data class XThiefSettings(
                 bilibiliUserId.trim().takeIf { it.isNotEmpty() }?.let { add("DedeUserID=$it") }
             }.joinToString("; ")
         }
+
+    /**
+     * Assembled `Cookie:` header for YouTube, or null when `SID` is missing.
+     *
+     * YouTube's account auth reads this whole set, so they are stored individually and joined here
+     * rather than asking for one pasted string.
+     */
+    val youtubeCookieHeader: String?
+        get() {
+            val sid = youtubeSid.trim()
+            if (sid.isEmpty()) return null
+            return buildList {
+                add("SID=$sid")
+                youtubeHsid.trim().takeIf { it.isNotEmpty() }?.let { add("HSID=$it") }
+                youtubeSsid.trim().takeIf { it.isNotEmpty() }?.let { add("SSID=$it") }
+                youtubeApisid.trim().takeIf { it.isNotEmpty() }?.let { add("APISID=$it") }
+                youtubeSapisid.trim().takeIf { it.isNotEmpty() }?.let { add("SAPISID=$it") }
+            }.joinToString("; ")
+        }
 }
 
 class XThiefSettingsStore(context: Context) {
@@ -205,7 +231,11 @@ class XThiefSettingsStore(context: Context) {
         cookieCsrfToken = prefs.getString(KEY_COOKIE_CSRF, null).orEmpty(),
         cookieUserId = prefs.getString(KEY_COOKIE_USER, null).orEmpty(),
         cookieGuestId = prefs.getString(KEY_COOKIE_GUEST, null).orEmpty(),
-        youtubeCookie = prefs.getString(KEY_COOKIE_YOUTUBE, null).orEmpty(),
+        youtubeSid = prefs.getString(KEY_COOKIE_YT_SID, null).orEmpty(),
+        youtubeHsid = prefs.getString(KEY_COOKIE_YT_HSID, null).orEmpty(),
+        youtubeSsid = prefs.getString(KEY_COOKIE_YT_SSID, null).orEmpty(),
+        youtubeApisid = prefs.getString(KEY_COOKIE_YT_APISID, null).orEmpty(),
+        youtubeSapisid = prefs.getString(KEY_COOKIE_YT_SAPISID, null).orEmpty(),
         bilibiliSessdata = prefs.getString(KEY_COOKIE_BILI_SESSDATA, null).orEmpty(),
         bilibiliJct = prefs.getString(KEY_COOKIE_BILI_JCT, null).orEmpty(),
         bilibiliUserId = prefs.getString(KEY_COOKIE_BILI_USERID, null).orEmpty(),
@@ -238,7 +268,11 @@ class XThiefSettingsStore(context: Context) {
             .putString(KEY_COOKIE_CSRF, value.cookieCsrfToken)
             .putString(KEY_COOKIE_USER, value.cookieUserId)
             .putString(KEY_COOKIE_GUEST, value.cookieGuestId)
-            .putString(KEY_COOKIE_YOUTUBE, value.youtubeCookie)
+            .putString(KEY_COOKIE_YT_SID, value.youtubeSid)
+            .putString(KEY_COOKIE_YT_HSID, value.youtubeHsid)
+            .putString(KEY_COOKIE_YT_SSID, value.youtubeSsid)
+            .putString(KEY_COOKIE_YT_APISID, value.youtubeApisid)
+            .putString(KEY_COOKIE_YT_SAPISID, value.youtubeSapisid)
             .putString(KEY_COOKIE_BILI_SESSDATA, value.bilibiliSessdata)
             .putString(KEY_COOKIE_BILI_JCT, value.bilibiliJct)
             .putString(KEY_COOKIE_BILI_USERID, value.bilibiliUserId)
@@ -284,7 +318,11 @@ private const val KEY_COOKIE_AUTH = "cookie_auth_token"
 private const val KEY_COOKIE_CSRF = "cookie_ct0"
 private const val KEY_COOKIE_USER = "cookie_twid"
 private const val KEY_COOKIE_GUEST = "cookie_guest_id"
-private const val KEY_COOKIE_YOUTUBE = "cookie_youtube"
+private const val KEY_COOKIE_YT_SID = "cookie_yt_sid"
+private const val KEY_COOKIE_YT_HSID = "cookie_yt_hsid"
+private const val KEY_COOKIE_YT_SSID = "cookie_yt_ssid"
+private const val KEY_COOKIE_YT_APISID = "cookie_yt_apisid"
+private const val KEY_COOKIE_YT_SAPISID = "cookie_yt_sapisid"
 private const val KEY_COOKIE_BILI_SESSDATA = "cookie_bili_sessdata"
 private const val KEY_COOKIE_BILI_JCT = "cookie_bili_jct"
 private const val KEY_COOKIE_BILI_USERID = "cookie_bili_userid"

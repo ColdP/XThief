@@ -2,6 +2,7 @@
 // Copyright 2026 btm_m
 package btm.m.xthief.bili
 
+import android.util.Base64
 import btm.m.xthief.data.TweetMedia
 import btm.m.xthief.data.VideoVariant
 import btm.m.xthief.data.XThiefSettingsStore
@@ -64,10 +65,10 @@ class BilibiliExtractor(private val settingsStore: XThiefSettingsStore) {
                 put("bvid", id)
             }
             put("cid", cid.toString())
-            put("qn", MAX_QN.toString())
             put("fnval", FNVAL_DASH.toString())
-            put("fnver", "0")
-            put("fourk", "1")
+            // Browser-fingerprint parameters. Bilibili's risk control expects them, and yt-dlp
+            // fills them with random values rather than omitting them.
+            putAll(dmParams())
         }
         val signed = if (keys != null) {
             WbiSigner.sign(playParams, keys)
@@ -153,6 +154,48 @@ class BilibiliExtractor(private val settingsStore: XThiefSettingsStore) {
         }.getOrNull()
     }
 
+    /**
+     * Random browser-fingerprint values Bilibili's risk control looks for.
+     *
+     * Ported from yt-dlp, which sourced the formulas from Bilibili's own
+     * `bili-user-fingerprint.min.js`. The mouse-derived fields (`dm_img_list`, `ds`) stay empty
+     * because playback works without pointer events; the rest are randomised each call.
+     */
+    private fun dmParams(): Map<String, String> {
+        val random = kotlin.random.Random
+        // Weighted towards common display sizes, like yt-dlp's screen-dimension picker.
+        val (width, height) = listOf(
+            1920 to 1080, 1366 to 768, 1536 to 864, 1280 to 720, 2560 to 1440, 1440 to 900,
+            1600 to 900,
+        ).let { it[random.nextInt(it.size)] }
+
+        val whRandom = random.nextInt(114)
+        val ofRandom = random.nextInt(514)
+
+        return mapOf(
+            "dm_img_list" to "[]",
+            "dm_img_str" to randomBase64(16, 64),
+            "dm_cover_img_str" to randomBase64(32, 128),
+            // Compact JSON: Bilibili rejects it when it contains spaces.
+            "dm_img_inter" to """{"ds":[],"wh":[${2 * width + 2 * height + 3 * whRandom},""" +
+                """${4 * width - height + whRandom},$whRandom],""" +
+                """"of":[${3 * 10 + 2 * 10 + ofRandom},${4 * 10 - 4 * 10 + 2 * ofRandom},$ofRandom]}""",
+        )
+    }
+
+    /** Base64 of [length] printable ASCII characters, with padding stripped like the original. */
+    private fun randomBase64(minLength: Int, maxLength: Int): String {
+        val random = kotlin.random.Random
+        val charCount = minLength + random.nextInt(maxLength - minLength + 1)
+        val text = buildString(charCount) {
+            repeat(charCount) { append(PRINTABLE[random.nextInt(PRINTABLE.size)]) }
+        }
+        return Base64.encodeToString(
+            text.toByteArray(Charsets.UTF_8),
+            Base64.NO_WRAP or Base64.NO_PADDING,
+        )
+    }
+
     /** Fetches the daily WBI keys; a failure just means the request goes out unsigned. */
     private fun fetchWbiKeys(cookie: String?): WbiSigner.WbiKeys? = runCatching {
         WbiSigner.keysFromNav(request(NAV_URL, cookie))
@@ -181,7 +224,12 @@ class BilibiliExtractor(private val settingsStore: XThiefSettingsStore) {
 
     private companion object {
         const val VIEW_URL = "https://api.bilibili.com/x/web-interface/view"
-        const val PLAYURL_URL = "https://api.bilibili.com/x/player/playurl"
+
+        /**
+         * The WBI variant. The plain `x/player/playurl` endpoint still lists qualities but hands
+         * back CDN URLs that answer 403 on download, which is exactly the failure it caused before.
+         */
+        const val PLAYURL_URL = "https://api.bilibili.com/x/player/wbi/playurl"
         const val NAV_URL = "https://api.bilibili.com/x/web-interface/nav"
 
         /** 127 = 8K; the API clamps this to whatever the account may actually access. */
@@ -195,5 +243,14 @@ class BilibiliExtractor(private val settingsStore: XThiefSettingsStore) {
         const val USER_AGENT =
             "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 (KHTML, like Gecko) " +
                 "Chrome/133.0.0.0 Mobile Safari/537.36"
+
+        /** Python's `string.printable`: digits, letters, punctuation and whitespace. */
+        val PRINTABLE: CharArray = buildList {
+            addAll(('0'..'9').toList())
+            addAll(('a'..'z').toList())
+            addAll(('A'..'Z').toList())
+            addAll("!\"#\$%&'()*+,-./:;<=>?@[\\]^_`{|}~".toList())
+            addAll(" \t\n\r\u000b\u000c".toList())
+        }.toCharArray()
     }
 }

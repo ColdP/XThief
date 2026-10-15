@@ -38,11 +38,14 @@ class YoutubeExtractor(private val settingsStore: XThiefSettingsStore) {
     )
 
     suspend fun resolve(videoId: String): TweetMedia = withContext(Dispatchers.IO) {
-        val cookie = settingsStore.current.youtubeCookie.trim().takeIf { it.isNotEmpty() }
+        val cookie = settingsStore.current.youtubeCookieHeader
+        // yt-dlp uses a different client order once credentials are present, because
+        // `web_embedded` is the one that accepts cookies best.
+        val clients = if (cookie != null) AUTHED_CLIENTS else ANONYMOUS_CLIENTS
 
         // Collect the failures so the message can say what each client complained about.
         val attempts = mutableListOf<String>()
-        for (client in CLIENTS) {
+        for (client in clients) {
             val result = runCatching { player(videoId, client, cookie) }
             result.onSuccess { return@withContext it }
             val reason = result.exceptionOrNull()?.message ?: "未知错误"
@@ -183,52 +186,62 @@ class YoutubeExtractor(private val settingsStore: XThiefSettingsStore) {
         /** Public InnerTube key that ships inside YouTube's own web player; not a user secret. */
         const val API_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
 
+        private val TV_SAMSUNG = Client(
+            name = "TVHTML5",
+            version = "5.20260707",
+            numericId = "7",
+            userAgent = "Mozilla/5.0 (SMART-TV; Linux; Tizen 2.4.0) AppleWebKit/538.1 " +
+                "(KHTML, like Gecko) Version/2.4.0 TV Safari/538.1",
+            extraContext = mapOf(
+                "deviceMake" to "Samsung",
+                "deviceModel" to "UKS9800",
+                "osName" to "Tizen",
+                "osVersion" to "2.4.0",
+            ),
+        )
+
+        private val VISIONOS = Client(
+            name = "VISIONOS",
+            version = "1.02",
+            numericId = "101",
+            userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 " +
+                "(KHTML, like Gecko) Version/26.0 Safari/605.1.15",
+            extraContext = mapOf(
+                "deviceMake" to "Apple",
+                "deviceModel" to "RealityDevice17,1",
+                "osName" to "visionOS",
+                "osVersion" to "26.5.23O471",
+            ),
+        )
+
+        private val WEB_EMBEDDED = Client(
+            name = "WEB_EMBEDDED_PLAYER",
+            version = "2.20260708.00.00",
+            numericId = "56",
+            userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 " +
+                "(KHTML, like Gecko) Version/15.5 Safari/605.1.15,gzip(gfe)",
+            extraContext = emptyMap(),
+        )
+
+        private val WEB = Client(
+            name = "WEB",
+            version = "2.20260708.00.00",
+            numericId = "1",
+            userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+                "(KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+            extraContext = emptyMap(),
+        )
+
         /**
-         * Tried in order, mirroring yt-dlp's `_DEFAULT_CLIENTS`.
+         * Anonymous order, mirroring yt-dlp's `_DEFAULT_CLIENTS`.
          *
          * `tv_samsung` and `visionos` carry no `GvsPoTokenPolicy` in yt-dlp, i.e. they do **not**
          * demand a PO Token — the `web` client does, and obtaining one requires running YouTube's
-         * BotGuard JavaScript, which is not something this app can do. `tv_samsung` is first
-         * because it is yt-dlp's own primary client.
-         *
-         * `web` is kept last purely as a long shot: it only works when the response happens to
-         * carry ready-made `url` fields instead of `signatureCipher`.
+         * BotGuard JavaScript, which is not something this app can do.
          */
-        val CLIENTS = listOf(
-            Client(
-                name = "TVHTML5",
-                version = "5.20260707",
-                numericId = "7",
-                userAgent = "Mozilla/5.0 (SMART-TV; Linux; Tizen 2.4.0) AppleWebKit/538.1 " +
-                    "(KHTML, like Gecko) Version/2.4.0 TV Safari/538.1",
-                extraContext = mapOf(
-                    "deviceMake" to "Samsung",
-                    "deviceModel" to "UKS9800",
-                    "osName" to "Tizen",
-                    "osVersion" to "2.4.0",
-                ),
-            ),
-            Client(
-                name = "VISIONOS",
-                version = "1.02",
-                numericId = "101",
-                userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 " +
-                    "(KHTML, like Gecko) Version/26.0 Safari/605.1.15",
-                extraContext = mapOf(
-                    "deviceMake" to "Apple",
-                    "deviceModel" to "RealityDevice17,1",
-                    "osName" to "visionOS",
-                    "osVersion" to "26.5.23O471",
-                ),
-            ),
-            Client(
-                name = "WEB",
-                version = "2.20260708.00.00",
-                numericId = "1",
-                userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-                    "(KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
-                extraContext = emptyMap(),
-            ),
-        )
+        val ANONYMOUS_CLIENTS = listOf(TV_SAMSUNG, VISIONOS, WEB)
+
+        /** Order once cookies are present, mirroring yt-dlp's `_DEFAULT_AUTHED_CLIENTS`. */
+        val AUTHED_CLIENTS = listOf(WEB_EMBEDDED, TV_SAMSUNG, WEB)
     }
 }

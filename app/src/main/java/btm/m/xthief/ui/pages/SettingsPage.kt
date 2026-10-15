@@ -399,9 +399,13 @@ fun SettingsPage(
                 )
                 ActionRow(
                     title = "YouTube Cookie",
-                    subtitle = settings.youtubeCookie.takeIf { it.isNotBlank() }
-                        ?.let { "已设置" }
-                        ?: "未设置 · 年龄限制或会员视频需要",
+                    subtitle = if (settings.youtubeSid.isBlank()) {
+                        "未设置 · 遇到「确认你不是机器人」时才需要"
+                    } else if (settings.youtubeSapisid.isBlank()) {
+                        "已设置 SID · 建议把 HSID/SSID/APISID/SAPISID 一并填上"
+                    } else {
+                        "已设置 · SID、HSID、SSID、APISID、SAPISID"
+                    },
                     onClick = { editingYoutubeCookie = true },
                 )
             }
@@ -517,13 +521,23 @@ fun SettingsPage(
     }
 
     if (editingYoutubeCookie) {
-        RawCookieDialog(
-            title = "YouTube Cookie",
-            hint = "复制浏览器的整段 Cookie。普通视频无需填写，年龄限制或会员内容才需要。",
-            initial = settings.youtubeCookie,
+        YoutubeCookieDialog(
+            sid = settings.youtubeSid,
+            hsid = settings.youtubeHsid,
+            ssid = settings.youtubeSsid,
+            apisid = settings.youtubeApisid,
+            sapisid = settings.youtubeSapisid,
             onDismiss = { editingYoutubeCookie = false },
-            onSave = { value ->
-                update { it.copy(youtubeCookie = value) }
+            onSave = { sid, hsid, ssid, apisid, sapisid ->
+                update {
+                    it.copy(
+                        youtubeSid = sid,
+                        youtubeHsid = hsid,
+                        youtubeSsid = ssid,
+                        youtubeApisid = apisid,
+                        youtubeSapisid = sapisid,
+                    )
+                }
                 editingYoutubeCookie = false
             },
         )
@@ -589,6 +603,80 @@ private fun BilibiliCookieDialog(
     }
 }
 
+/**
+ * YouTube login cookies, one field per row.
+ *
+ * Same reasoning as the Bilibili dialog: browsers list cookies as individual name/value pairs.
+ * `SID` is mandatory; the other four are what YouTube's account authentication actually validates
+ * together, so leaving them out tends to make the login look inconsistent to YouTube.
+ */
+@Composable
+private fun YoutubeCookieDialog(
+    sid: String,
+    hsid: String,
+    ssid: String,
+    apisid: String,
+    sapisid: String,
+    onDismiss: () -> Unit,
+    onSave: (String, String, String, String, String) -> Unit,
+) {
+    var sidDraft by remember { mutableStateOf(sid) }
+    var hsidDraft by remember { mutableStateOf(hsid) }
+    var ssidDraft by remember { mutableStateOf(ssid) }
+    var apisidDraft by remember { mutableStateOf(apisid) }
+    var sapisidDraft by remember { mutableStateOf(sapisid) }
+
+    WindowDialog(show = true, onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                text = "YouTube Cookie",
+                modifier = Modifier.fillMaxWidth(),
+                style = MiuixTheme.textStyles.title3,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Start,
+            )
+            Text(
+                text = "在浏览器打开 youtube.com → F12 → Application → Cookies → " +
+                    "https://www.youtube.com，按名称逐项填入。五个都填才能通过账号校验；" +
+                    "普通视频无需填写，遇到「Sign in to confirm you're not a bot」时才需要。",
+                modifier = Modifier.fillMaxWidth(),
+                style = MiuixTheme.textStyles.footnote2,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                textAlign = TextAlign.Start,
+            )
+            CookieField("SID", sidDraft) { sidDraft = it }
+            CookieField("HSID", hsidDraft) { hsidDraft = it }
+            CookieField("SSID", ssidDraft) { ssidDraft = it }
+            CookieField("APISID", apisidDraft) { apisidDraft = it }
+            CookieField("SAPISID", sapisidDraft) { sapisidDraft = it }
+            Row(
+                Modifier.fillMaxWidth().padding(top = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                GlassDialogButton(
+                    onClick = {
+                        onSave(
+                            sidDraft.trim(),
+                            hsidDraft.trim(),
+                            ssidDraft.trim(),
+                            apisidDraft.trim(),
+                            sapisidDraft.trim(),
+                        )
+                    },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(
+                        color = Color(0xFF0088FF),
+                        contentColor = Color.White,
+                    ),
+                ) { Text("保存") }
+                GlassDialogButton(onClick = onDismiss, modifier = Modifier.weight(1f)) {
+                    Text("取消")
+                }
+            }
+        }
+    }
+}
+
 /** One labelled cookie input inside [BilibiliCookieDialog]. */
 @Composable
 private fun CookieField(label: String, value: String, onValueChange: (String) -> Unit) {
@@ -609,8 +697,7 @@ private fun CookieField(label: String, value: String, onValueChange: (String) ->
  * Same shape as the other sheets: left-aligned heading, a hint, one multi-line box, then actions.
  */
 @Composable
-private fun RawCookieDialog(
-    title: String,
+private fun RawCookieDialog(title: String,
     hint: String,
     initial: String,
     onDismiss: () -> Unit,
