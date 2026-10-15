@@ -351,19 +351,28 @@ fun CustomNavigation(
 /**
  * Shared blur + fade + slide-out for anything that should leave the screen the way the bottom
  * navigation does. [progress] is 1 = fully visible, 0 = fully hidden.
+ *
+ * @param fadeWithBlur when true the content fades out in step with the blur instead of holding full
+ *   opacity for the first 45%. Bars that sit over a video need this: a semi-transparent capsule
+ *   blurred at full opacity reads as a lingering smudge rather than something that left.
  */
 @Composable
 internal fun Modifier.navHideAnimation(
     progress: Float,
     maxBlur: Dp,
     style: NavigationStyle,
+    fadeWithBlur: Boolean = false,
 ): Modifier {
     val density = LocalDensity.current
     val hidden = 1f - progress.coerceIn(0f, 1f)
     val isDocked = style == NavigationStyle.HYPER_OS
 
     val blurFraction = (hidden / 0.45f).coerceIn(0f, 1f)
-    val alphaValue = 1f - ((hidden - 0.45f) / 0.55f).coerceIn(0f, 1f)
+    val alphaValue = if (fadeWithBlur) {
+        1f - (hidden / 0.6f).coerceIn(0f, 1f)
+    } else {
+        1f - ((hidden - 0.45f) / 0.55f).coerceIn(0f, 1f)
+    }
     val slideFraction = ((hidden - 0.2f) / 0.8f).coerceIn(0f, 1f)
 
     val blurPx = with(density) { (maxBlur * blurFraction).toPx() }

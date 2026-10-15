@@ -39,6 +39,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -141,8 +142,7 @@ private val NAV_LABEL_SIZE = 10.5.sp
 private val TRANSPORT_ICON_SIZE = NAV_ICON_SIZE * 0.8f
 
 /**
- * Light frosted scrim for the player's glass bars. The shared default is the theme surface at 80%
- * alpha, which reads as a flat block over video.
+ * Light frosted scrim for the player's glass bars, used when no tint has been sampled yet.
  */
 private val PLAYER_GLASS_TINT = Color.White.copy(alpha = .42f)
 
@@ -160,9 +160,11 @@ private val CHROME_HIDE_BLUR = 16.dp
 /** How close the player must get to a requested position before polling resumes from it. */
 private const val SEEK_SETTLE_MS = 1_200L
 
-/** Top bar: a very transparent blur, tinted with a colour sampled from the video's top strip. */
-private val TOP_BLUR = 28.dp
-private const val TOP_TINT_ALPHA = .18f
+/** Top bar: the same floating capsule as the bottom bars, one row tall. */
+private val TOP_BAR_HEIGHT = 56.dp
+
+/** How transparent the sampled tint is on every glass surface. */
+private const val TOP_TINT_ALPHA = .38f
 private const val TINT_REFRESH_MS = 1_200L
 private const val TITLE_INK_THRESHOLD = .55f
 private val TOP_BAR_SAMPLE_HEIGHT = 64.dp
@@ -235,7 +237,9 @@ fun PlayerScreen(
     // Sample the video's top strip (behind the status bar) so the title ink and the blur tint
     // always match what is actually behind them, and re-sample as playback moves on.
     var textureView by remember { mutableStateOf<TextureView?>(null) }
-    var topTint by remember { mutableStateOf(Color.Black) }
+    // Starts at the frosted fallback so the first frame is not black; replaced by the sampled
+    // colour as soon as the first frame is drawn.
+    var topTint by remember { mutableStateOf(PLAYER_GLASS_TINT) }
     val statusBarPx = WindowInsets.statusBars.getTop(density)
     val sampleHeightPx = statusBarPx + with(density) { TOP_BAR_SAMPLE_HEIGHT.roundToPx() }
 
@@ -260,6 +264,9 @@ fun PlayerScreen(
         }
     }
     val titleInk = if (topTint.luminance() > TITLE_INK_THRESHOLD) Color.Black else Color.White
+    // Every glass surface — the top bar, the transport card and the action bar — carries this
+    // sampled tint, so they all blend into whatever the video is showing.
+    val glassTint = topTint.copy(alpha = TOP_TINT_ALPHA)
 
     val chromeProgress by animateFloatAsState(
         targetValue = if (chromeVisible) 1f else 0f,
@@ -452,30 +459,24 @@ fun PlayerScreen(
                 modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth(),
             ) {
                 BlurFadeContent(visible = chromeVisible, maxBlur = 12.dp, minAlpha = 0f) {
-                    Box {
-                        // A very transparent blur with a tint sampled from the video's top strip:
-                        // no gradient scrim, and the tint is refreshed as playback moves on.
-                        Box(
-                            Modifier
-                                .matchParentSize()
-                                .drawPlainBackdrop(
-                                    backdrop = backdrop,
-                                    shape = { RectangleShape },
-                                    effects = { blur(TOP_BLUR.toPx()) },
-                                    onDrawSurface = {
-                                        drawRect(topTint.copy(alpha = TOP_TINT_ALPHA))
-                                    },
-                                ),
-                        )
-                        SmallTopAppBar(
-                            title = source.title,
-                            subtitle = source.subtitle,
-                            color = Color.Transparent,
-                            titleColor = titleInk,
-                            subtitleColor = titleInk.copy(alpha = .70f),
-                            scrollBehavior = scroll,
-                            navigationIcon = {
-                                // Plain icon, no liquid-glass capsule, per the MIUIX top bar spec.
+                    // The same floating capsule as the bars below, inset past the status bar.
+                    Box(
+                        Modifier
+                            .align(Alignment.TopCenter)
+                            .fillMaxWidth()
+                            .windowInsetsPadding(WindowInsets.statusBars)
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                    ) {
+                        GlassFloatingToolbar(
+                            modifier = Modifier.fillMaxWidth().height(TOP_BAR_HEIGHT),
+                            surfaceTint = glassTint,
+                            shadowTint = Color.Black,
+                            highlightAlpha = 0f,
+                        ) {
+                            Row(
+                                Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
                                 IconButton(onClick = onBack) {
                                     Icon(
                                         MiuixIcons.Regular.ChevronBackward,
@@ -484,8 +485,32 @@ fun PlayerScreen(
                                         tint = titleInk,
                                     )
                                 }
-                            },
-                        )
+                                // Both lines live in this column, so they left-align with each
+                                // other and sit on the button's vertical centre.
+                                Column(
+                                    Modifier
+                                        .weight(1f)
+                                        .padding(start = 2.dp, end = 10.dp),
+                                ) {
+                                    Text(
+                                        text = source.title,
+                                        color = titleInk,
+                                        style = MiuixTheme.textStyles.title4,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    if (source.subtitle.isNotBlank()) {
+                                        Text(
+                                            text = source.subtitle,
+                                            color = titleInk.copy(alpha = .70f),
+                                            style = MiuixTheme.textStyles.footnote2,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -500,6 +525,9 @@ fun PlayerScreen(
                         progress = chromeProgress,
                         maxBlur = CHROME_HIDE_BLUR,
                         style = NavigationStyle.HYPER_OS_FLOATING,
+                        // Fade with the blur: these bars are translucent, so holding full opacity
+                        // while blurred leaves a smudge instead of an exit.
+                        fadeWithBlur = true,
                     ),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -514,6 +542,7 @@ fun PlayerScreen(
                     // (advancedMaterial defaults to false), and blurring an edge-lit sheen is what
                     // produced the white patch during the hide/show animation.
                     highlightAlpha = 0f,
+                    surfaceTint = glassTint,
                     onTogglePlay = { togglePlayback(player) { isPlaying = it } },
                     onToggleMute = {
                         val next = !isMuted
@@ -539,6 +568,7 @@ fun PlayerScreen(
                 PlayerActionToolbar(
                     favorite = favorite,
                     highlightAlpha = 0f,
+                    surfaceTint = glassTint,
                     onToggleFavorite = onToggleFavorite,
                     onOpenWith = onOpenWith,
                     onInfo = onInfo,
@@ -591,6 +621,7 @@ private fun PlayerTransportCard(
     durationMs: Long,
     scrubbing: Boolean,
     highlightAlpha: Float,
+    surfaceTint: Color,
     onTogglePlay: () -> Unit,
     onToggleMute: () -> Unit,
     onScrubStart: () -> Unit,
@@ -612,7 +643,7 @@ private fun PlayerTransportCard(
         modifier = Modifier
             .fillMaxWidth(NAV_WIDTH_FRACTION)
             .height(cardHeight),
-        surfaceTint = PLAYER_GLASS_TINT,
+        surfaceTint = surfaceTint,
         cornerRadius = cardRadius,
         shadowTint = Color.Black,
         highlightAlpha = highlightAlpha,
@@ -711,6 +742,7 @@ private fun PlayerTransportCard(
 private fun PlayerActionToolbar(
     favorite: Boolean,
     highlightAlpha: Float,
+    surfaceTint: Color,
     onToggleFavorite: () -> Unit,
     onOpenWith: () -> Unit,
     onInfo: () -> Unit,
@@ -719,7 +751,7 @@ private fun PlayerActionToolbar(
 ) {
     GlassFloatingToolbar(
         modifier = Modifier.fillMaxWidth(NAV_WIDTH_FRACTION).height(NAV_HEIGHT),
-        surfaceTint = PLAYER_GLASS_TINT,
+        surfaceTint = surfaceTint,
         shadowTint = Color.Black,
         highlightAlpha = highlightAlpha,
     ) {
