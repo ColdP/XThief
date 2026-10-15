@@ -11,13 +11,21 @@ data class VideoVariant(
     val width: Int = 0,
     val height: Int = 0,
     /**
-     * For HLS renditions whose audio lives in a separate playlist, the audio media-playlist URL.
-     * Non-null marks this variant as HLS to be assembled from fMP4 segments.
+     * Audio track that must be muxed into [url] after both are downloaded. For X's HLS renditions
+     * this is another media playlist; for Bilibili's DASH streams it is a progressive MP4.
      */
-    val hlsAudioUrl: String? = null,
+    val audioUrl: String? = null,
+    /**
+     * `Referer` the CDN expects. Bilibili's media hosts answer 403 without one, while X's do not
+     * care.
+     */
+    val referer: String? = null,
 ) {
     /** True when this rendition must be downloaded as an HLS playlist rather than a plain MP4. */
     val isHls: Boolean get() = url.contains(".m3u8", ignoreCase = true)
+
+    /** True when the audio arrives separately and has to be muxed in afterwards. */
+    val needsMux: Boolean get() = !audioUrl.isNullOrBlank()
 
     val resolutionLabel: String
         get() = when {

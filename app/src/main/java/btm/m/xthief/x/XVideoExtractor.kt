@@ -517,7 +517,7 @@ class XVideoExtractor(
                         contentType = "video/mp4",
                         width = resolution.first,
                         height = resolution.second,
-                        hlsAudioUrl = audioGroups[audioGroup]?.second,
+                        audioUrl = audioGroups[audioGroup]?.second,
                     )
                     resolution = 0 to 0
                     bandwidth = 0

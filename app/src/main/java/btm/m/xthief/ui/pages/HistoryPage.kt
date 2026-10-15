@@ -59,6 +59,7 @@ import btm.m.xthief.ui.components.EmptyState
 import btm.m.xthief.ui.components.GlassDialogButton
 import btm.m.xthief.ui.components.GlassFloatingToolbar
 import btm.m.xthief.ui.components.GlassFloatingToolbarRow
+import btm.m.xthief.ui.components.GlassToolbarIconButton
 import btm.m.xthief.ui.components.IconAction
 import btm.m.xthief.ui.components.SectionHeader
 import btm.m.xthief.ui.components.SensitiveBadge
@@ -231,10 +232,10 @@ fun HistoryPage(
                 exit = fadeOut(tween(140)) + scaleOut(tween(140), targetScale = .9f),
             ) {
                 if (records.isNotEmpty() || tasks.isNotEmpty()) {
-                    IconAction(
+                    // Liquid glass, matching the library page's toolbar actions.
+                    GlassToolbarIconButton(
                         icon = MiuixIcons.Regular.Delete,
                         description = "清空记录",
-                        tint = MiuixTheme.colorScheme.error,
                         onClick = { confirmClear = true },
                     )
                 }

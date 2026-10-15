@@ -97,6 +97,10 @@ data class XThiefSettings(
     val cookieUserId: String = "",
     /** Optional guest id (`guest_id`). */
     val cookieGuestId: String = "",
+    /** Raw `Cookie:` header sent to YouTube; needed for age-restricted or members-only videos. */
+    val youtubeCookie: String = "",
+    /** Raw `Cookie:` header sent to Bilibili; `SESSDATA` is what unlocks 1080p and above. */
+    val bilibiliCookie: String = "",
     /** Media library layout: a plain list or a two-column staggered grid. */
     val libraryViewMode: String = LIBRARY_VIEW_LIST,
     /** Blurs the cover of videos whose source post was flagged sensitive. */
@@ -178,6 +182,8 @@ class XThiefSettingsStore(context: Context) {
         cookieCsrfToken = prefs.getString(KEY_COOKIE_CSRF, null).orEmpty(),
         cookieUserId = prefs.getString(KEY_COOKIE_USER, null).orEmpty(),
         cookieGuestId = prefs.getString(KEY_COOKIE_GUEST, null).orEmpty(),
+        youtubeCookie = prefs.getString(KEY_COOKIE_YOUTUBE, null).orEmpty(),
+        bilibiliCookie = prefs.getString(KEY_COOKIE_BILIBILI, null).orEmpty(),
         libraryViewMode = prefs.getString(KEY_LIBRARY_VIEW, null) ?: LIBRARY_VIEW_LIST,
         blurSensitiveCovers = prefs.getBoolean(KEY_BLUR_SENSITIVE, true),
         shortVideoMode = prefs.getBoolean(KEY_SHORT_VIDEO, false),
@@ -207,6 +213,8 @@ class XThiefSettingsStore(context: Context) {
             .putString(KEY_COOKIE_CSRF, value.cookieCsrfToken)
             .putString(KEY_COOKIE_USER, value.cookieUserId)
             .putString(KEY_COOKIE_GUEST, value.cookieGuestId)
+            .putString(KEY_COOKIE_YOUTUBE, value.youtubeCookie)
+            .putString(KEY_COOKIE_BILIBILI, value.bilibiliCookie)
             .putString(KEY_LIBRARY_VIEW, value.libraryViewMode)
             .putBoolean(KEY_BLUR_SENSITIVE, value.blurSensitiveCovers)
             .putBoolean(KEY_SHORT_VIDEO, value.shortVideoMode)
@@ -249,6 +257,8 @@ private const val KEY_COOKIE_AUTH = "cookie_auth_token"
 private const val KEY_COOKIE_CSRF = "cookie_ct0"
 private const val KEY_COOKIE_USER = "cookie_twid"
 private const val KEY_COOKIE_GUEST = "cookie_guest_id"
+private const val KEY_COOKIE_YOUTUBE = "cookie_youtube"
+private const val KEY_COOKIE_BILIBILI = "cookie_bilibili"
 private const val KEY_LIBRARY_VIEW = "library_view_mode"
 private const val KEY_BLUR_SENSITIVE = "blur_sensitive_covers"
 private const val KEY_SHORT_VIDEO = "short_video_mode"

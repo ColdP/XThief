@@ -23,6 +23,7 @@ import btm.m.xthief.data.XThiefSettings
 import btm.m.xthief.data.XThiefSettingsStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
@@ -197,6 +198,12 @@ class XDownloadManager(
                 downloaded = streamHls(task.variant, target) { bytes, total ->
                     reportProgress(bytes, total)
                 }
+            } else if (task.variant.needsMux) {
+                // DASH: two progressive files rather than a playlist. Bilibili serves video and
+                // audio separately, so they are fetched and muxed like the HLS case.
+                downloaded = downloadAndMux(task.variant, target) { bytes, total ->
+                    reportProgress(bytes, total)
+                }
             } else {
                 connection = (URL(task.variant.url).openConnection() as HttpURLConnection).apply {
                     connectTimeout = 20_000
@@ -204,6 +211,7 @@ class XDownloadManager(
                     instanceFollowRedirects = true
                     setRequestProperty("User-Agent", DOWNLOAD_USER_AGENT)
                     setRequestProperty("Accept", "*/*")
+                    task.variant.referer?.let { setRequestProperty("Referer", it) }
                 }
                 val code = connection.responseCode
                 if (code !in 200..299) throw IOException("下载失败（HTTP $code）")
@@ -418,6 +426,99 @@ class XDownloadManager(
         }
     }
 
+    // ------------------------------------------------------------------ DASH
+
+    /**
+     * Downloads a video and its separate audio track as plain files, then muxes them.
+     *
+     * Bilibili's DASH streams are two progressive MP4 URLs rather than an HLS playlist, so they take
+     * this path; only the fetching differs, the muxing half is shared with the HLS case.
+     */
+    private suspend fun downloadAndMux(
+        variant: VideoVariant,
+        target: DownloadTarget,
+        onProgress: (bytes: Long, total: Long) -> Unit,
+    ): Long {
+        val workspace = File(appContext.cacheDir, "dash").apply { mkdirs() }
+        val stamp = "${System.currentTimeMillis()}_${variant.url.hashCode()}"
+        val videoFile = File(workspace, "video_$stamp.mp4")
+        val audioFile = File(workspace, "audio_$stamp.mp4")
+        var muxedFile: File? = null
+        try {
+            fetchFileInto(variant.url, videoFile, variant.referer) { written ->
+                onProgress(written, -1L)
+            }
+            val audioUrl = variant.audioUrl
+            if (!audioUrl.isNullOrBlank()) {
+                fetchFileInto(audioUrl, audioFile, variant.referer) { }
+            }
+
+            if (audioFile.length() > 0L) {
+                val (file, bytes) = muxTracks(videoFile, audioFile)
+                muxedFile = file
+                file.inputStream().use { input ->
+                    target.openOutput().use { output ->
+                        input.copyToWithProgress(output, bytes) { copied ->
+                            onProgress(copied, bytes)
+                        }
+                    }
+                }
+                return bytes
+            }
+
+            // Video-only fallback, for streams that ship without a separate audio track.
+            val total = videoFile.length()
+            videoFile.inputStream().use { input ->
+                target.openOutput().use { output ->
+                    input.copyToWithProgress(output, total) { copied ->
+                        onProgress(copied, total)
+                    }
+                }
+            }
+            return total
+        } finally {
+            videoFile.delete()
+            audioFile.delete()
+            muxedFile?.delete()
+        }
+    }
+
+    /** Streams a plain media URL into [file], sending the headers some CDNs insist on. */
+    private suspend fun fetchFileInto(
+        url: String,
+        file: File,
+        referer: String?,
+        onProgress: (Long) -> Unit,
+    ) = withContext(Dispatchers.IO) {
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 20_000
+            readTimeout = 30_000
+            instanceFollowRedirects = true
+            setRequestProperty("User-Agent", DOWNLOAD_USER_AGENT)
+            setRequestProperty("Accept", "*/*")
+            referer?.let { setRequestProperty("Referer", it) }
+        }
+        try {
+            val code = connection.responseCode
+            if (code !in 200..299) throw IOException("下载失败（HTTP $code）")
+            connection.inputStream.use { input ->
+                file.outputStream().use { output ->
+                    val buffer = ByteArray(64 * 1024)
+                    var written = 0L
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        output.write(buffer, 0, read)
+                        written += read
+                        onProgress(written)
+                    }
+                }
+            }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
     // ------------------------------------------------------------------ HLS
 
     /**
@@ -445,7 +546,7 @@ class XDownloadManager(
             videoBytes += fetchPlaylistInto(variant.url, videoFile) { written ->
                 onProgress(written, -1L)
             }
-            val audioUrl = variant.hlsAudioUrl
+            val audioUrl = variant.audioUrl
             var audioBytes = 0L
             if (audioUrl != null) {
                 audioBytes = fetchPlaylistInto(audioUrl, audioFile) { }
