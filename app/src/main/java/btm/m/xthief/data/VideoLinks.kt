@@ -175,8 +175,13 @@ object VideoLinks {
         return parse(candidate ?: text)
     }
 
-    /** True for links this app can handle, used to gate the share-sheet import. */
-    fun isSupported(raw: String): Boolean = parse(raw) != null
+    /**
+     * True for links this app can handle, used to gate the share-sheet import.
+     *
+     * Short links count even though [parse] cannot read an id out of them: they are expanded over
+     * the network during resolution.
+     */
+    fun isSupported(raw: String): Boolean = parse(raw) != null || isShortLink(raw)
 
     fun lower(value: String): String = value.lowercase(Locale.getDefault())
 }

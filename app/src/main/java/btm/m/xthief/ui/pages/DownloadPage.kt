@@ -104,16 +104,28 @@ fun DownloadTab(
     }
 
     fun resolve(target: String) {
-        val parsed = VideoLinks.parse(target)
-        if (parsed == null) {
-            error = "请输入有效的 X / YouTube / Bilibili 视频链接"
-            return
-        }
         scope.launch {
             loading = true
             error = null
             media = null
             selected = null
+
+            // A b23.tv short link carries no id of its own, so follow it first.
+            val resolved = if (VideoLinks.isShortLink(target)) {
+                container.bilibiliExtractor.expandShortLink(target.trim())
+            } else {
+                target
+            }
+            val parsed = resolved?.let { VideoLinks.parse(it) }
+            if (parsed == null) {
+                error = if (VideoLinks.isShortLink(target)) {
+                    "无法展开这个 b23.tv 短链，请改用完整链接或直接输入 BV 号"
+                } else {
+                    "请输入有效的 X / YouTube / Bilibili 视频链接"
+                }
+                loading = false
+                return@launch
+            }
             platform = parsed.platform
             runCatching {
                 when (parsed.platform) {

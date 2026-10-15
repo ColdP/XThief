@@ -35,7 +35,7 @@ class BilibiliExtractor(private val settingsStore: XThiefSettingsStore) {
         }
         val cookie = settingsStore.current.bilibiliCookieHeader
 
-        val view = request("$VIEW_URL?$query", cookie)
+        val view = request("$VIEW_URL?$query&platform=web", cookie)
         if (view.optInt("code", -1) != 0) {
             throw BilibiliException(
                 "Bilibili 返回错误（${view.optInt("code")}）：" +
@@ -124,6 +124,33 @@ class BilibiliExtractor(private val settingsStore: XThiefSettingsStore) {
             createdAt = data.optLong("pubdate", 0L).toString(),
             videos = variants,
         )
+    }
+
+    /**
+     * Follows a `b23.tv` short link to its real URL.
+     *
+     * yt-dlp handles these by keeping the redirect handle from its page request and re-matching the
+     * final URL, so the same idea is used here: ask for the short link, let the connection follow
+     * the redirect, and hand back where it landed.
+     */
+    suspend fun expandShortLink(shortUrl: String): String? = withContext(Dispatchers.IO) {
+        runCatching {
+            val connection = (URL(shortUrl).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 15_000
+                readTimeout = 20_000
+                instanceFollowRedirects = true
+                setRequestProperty("User-Agent", USER_AGENT)
+                setRequestProperty("Referer", REFERER)
+            }
+            try {
+                connection.responseCode
+                // `url` is the final address once redirects have been followed.
+                connection.url?.toString()
+            } finally {
+                connection.disconnect()
+            }
+        }.getOrNull()
     }
 
     /** Fetches the daily WBI keys; a failure just means the request goes out unsigned. */
