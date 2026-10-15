@@ -22,6 +22,10 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.staggeredgrid.LazyStaggeredGridScope
+import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
+import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
+import androidx.compose.foundation.lazy.staggeredgrid.rememberLazyStaggeredGridState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
@@ -72,10 +76,18 @@ fun AppPage(
     background: (@Composable () -> Unit)? = null,
     floatingToolbarPosition: ToolbarPosition = ToolbarPosition.BottomCenter,
     floatingToolbar: @Composable () -> Unit = {},
+    /**
+     * When provided, the page body becomes a two-column staggered grid instead of a list. The top
+     * bar, backdrop and floating toolbar behave identically either way.
+     *
+     * Declared *before* [content] so the trailing-lambda call form keeps binding to `content`.
+     */
+    staggeredContent: (LazyStaggeredGridScope.() -> Unit)? = null,
     content: LazyListScope.() -> Unit,
 ) {
     val scroll = MiuixScrollBehavior()
     val listState = rememberLazyListState()
+    val staggeredState = rememberLazyStaggeredGridState()
     val backdrop = rememberLayerBackdrop()
     val surface = MiuixTheme.colorScheme.surface
     val collapsedFraction = scroll.state.collapsedFraction.coerceIn(0f, 1f)
@@ -214,20 +226,35 @@ fun AppPage(
             },
         ) { padding ->
             Box(Modifier.fillMaxSize().layerBackdrop(backdrop)) {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .nestedScroll(scroll.nestedScrollConnection),
-                    contentPadding = PaddingValues(
-                        start = 16.dp,
-                        end = 16.dp,
-                        top = padding.calculateTopPadding() + 4.dp,
-                        bottom = padding.calculateBottomPadding() + contentBottomPadding.dp,
-                    ),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                    content = content,
+                val contentPadding = PaddingValues(
+                    start = 16.dp,
+                    end = 16.dp,
+                    top = padding.calculateTopPadding() + 4.dp,
+                    bottom = padding.calculateBottomPadding() + contentBottomPadding.dp,
                 )
+                if (staggeredContent != null) {
+                    LazyVerticalStaggeredGrid(
+                        columns = StaggeredGridCells.Fixed(2),
+                        state = staggeredState,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .nestedScroll(scroll.nestedScrollConnection),
+                        contentPadding = contentPadding,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalItemSpacing = 12.dp,
+                        content = staggeredContent,
+                    )
+                } else {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .nestedScroll(scroll.nestedScrollConnection),
+                        contentPadding = contentPadding,
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                        content = content,
+                    )
+                }
             }
         }
         }

@@ -305,7 +305,13 @@ fun SettingsPage(
             }
         }
         item {
-            SectionCard(title = "权限") {
+            SectionCard(title = "权限与隐私") {
+                SwitchPreference(
+                    checked = settings.blurSensitiveCovers,
+                    onCheckedChange = { value -> update { it.copy(blurSensitiveCovers = value) } },
+                    title = "媒体库模糊敏感视频封面",
+                    summary = "把标记为敏感的内容封面做模糊处理",
+                )
                 ActionRow(
                     title = "所有文件访问权限",
                     subtitle = if (allFilesAccess) "已授予" else "未授予 · 点击前往系统设置授权",

@@ -34,6 +34,8 @@ import androidx.compose.ui.platform.LocalView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import btm.m.xthief.XThiefApplication
 import btm.m.xthief.data.DownloadRecord
+import btm.m.xthief.data.LIBRARY_VIEW_GRID
+import btm.m.xthief.data.LIBRARY_VIEW_LIST
 import btm.m.xthief.data.NavigationStyle
 import btm.m.xthief.ui.components.CustomNavigation
 import btm.m.xthief.ui.components.HostTab
@@ -227,6 +229,22 @@ fun XThiefScreen(
                                 onDeleteAll = { targets -> container.mediaLibrary.deleteAll(targets) },
                                 onSelectionModeChange = { active -> librarySelecting = active },
                                 toolbarVisible = libraryToolbarVisible,
+                                viewMode = settings.libraryViewMode,
+                                onToggleViewMode = {
+                                    settingsStore.update {
+                                        it.copy(
+                                            libraryViewMode = if (
+                                                it.libraryViewMode == LIBRARY_VIEW_GRID
+                                            ) {
+                                                LIBRARY_VIEW_LIST
+                                            } else {
+                                                LIBRARY_VIEW_GRID
+                                            },
+                                        )
+                                    }
+                                },
+                                blurSensitiveCovers = settings.blurSensitiveCovers,
+                                thumbnails = container.thumbnailCache,
                             )
 
                             MainTab.SETTINGS -> SettingsPage(

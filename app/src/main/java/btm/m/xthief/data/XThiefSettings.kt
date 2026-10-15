@@ -97,6 +97,10 @@ data class XThiefSettings(
     val cookieUserId: String = "",
     /** Optional guest id (`guest_id`). */
     val cookieGuestId: String = "",
+    /** Media library layout: a plain list or a two-column staggered grid. */
+    val libraryViewMode: String = LIBRARY_VIEW_LIST,
+    /** Blurs the cover of videos whose source post was flagged sensitive. */
+    val blurSensitiveCovers: Boolean = true,
 ) {
     val navStyle: NavigationStyle get() = NavigationStyle.fromPreference(navigationStyle)
     val navLabelMode: LabelMode get() = LabelMode.fromPreference(labelMode)
@@ -172,6 +176,8 @@ class XThiefSettingsStore(context: Context) {
         cookieCsrfToken = prefs.getString(KEY_COOKIE_CSRF, null).orEmpty(),
         cookieUserId = prefs.getString(KEY_COOKIE_USER, null).orEmpty(),
         cookieGuestId = prefs.getString(KEY_COOKIE_GUEST, null).orEmpty(),
+        libraryViewMode = prefs.getString(KEY_LIBRARY_VIEW, null) ?: LIBRARY_VIEW_LIST,
+        blurSensitiveCovers = prefs.getBoolean(KEY_BLUR_SENSITIVE, true),
     )
 
     private fun write(value: XThiefSettings) {
@@ -198,6 +204,8 @@ class XThiefSettingsStore(context: Context) {
             .putString(KEY_COOKIE_CSRF, value.cookieCsrfToken)
             .putString(KEY_COOKIE_USER, value.cookieUserId)
             .putString(KEY_COOKIE_GUEST, value.cookieGuestId)
+            .putString(KEY_LIBRARY_VIEW, value.libraryViewMode)
+            .putBoolean(KEY_BLUR_SENSITIVE, value.blurSensitiveCovers)
             .apply()
     }
 
@@ -237,6 +245,12 @@ private const val KEY_COOKIE_AUTH = "cookie_auth_token"
 private const val KEY_COOKIE_CSRF = "cookie_ct0"
 private const val KEY_COOKIE_USER = "cookie_twid"
 private const val KEY_COOKIE_GUEST = "cookie_guest_id"
+private const val KEY_LIBRARY_VIEW = "library_view_mode"
+private const val KEY_BLUR_SENSITIVE = "blur_sensitive_covers"
+
+/** Media library layouts. */
+const val LIBRARY_VIEW_LIST = "list"
+const val LIBRARY_VIEW_GRID = "grid"
 
 /** Save-destination modes and the default MediaStore collection. */
 const val SAVE_DIR_DEFAULT = "default"

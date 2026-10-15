@@ -2,6 +2,7 @@
 // Copyright 2026 btm_m
 package btm.m.xthief.ui.pages
 
+import android.graphics.Bitmap
 import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
@@ -15,33 +16,55 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.staggeredgrid.items as staggeredItems
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.BlurEffect
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import btm.m.xthief.data.LIBRARY_VIEW_GRID
+import btm.m.xthief.data.LIBRARY_VIEW_LIST
 import btm.m.xthief.data.MediaEntry
+import btm.m.xthief.data.ThumbnailCache
 import btm.m.xthief.ui.AppPage
 import btm.m.xthief.ui.components.EmptyState
 import btm.m.xthief.ui.components.GlassFloatingToolbar
@@ -62,6 +85,8 @@ import top.yukonga.miuix.kmp.basic.ToolbarPosition
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Close
 import top.yukonga.miuix.kmp.icon.extended.Delete
+import top.yukonga.miuix.kmp.icon.extended.GridView
+import top.yukonga.miuix.kmp.icon.extended.ListView
 import top.yukonga.miuix.kmp.icon.extended.Photos
 import top.yukonga.miuix.kmp.icon.extended.Refresh
 import top.yukonga.miuix.kmp.icon.extended.SelectAll
@@ -84,6 +109,13 @@ fun LibraryPage(
     toolbarVisible: Boolean = false,
     /** Lets the host hide the bottom navigation while the selection toolbar is up. */
     onSelectionModeChange: (Boolean) -> Unit = {},
+    /** LIBRARY_VIEW_LIST or LIBRARY_VIEW_GRID. */
+    viewMode: String = LIBRARY_VIEW_LIST,
+    onToggleViewMode: () -> Unit = {},
+    /** Blurs the cover of entries whose source post was flagged sensitive. */
+    blurSensitiveCovers: Boolean = true,
+    /** Supplies the cover frames; null leaves the cards without artwork. */
+    thumbnails: ThumbnailCache? = null,
 ) {
     // Multi-select state, mirroring HyperChanger's list pages.
     var selectionMode by remember { mutableStateOf(false) }
@@ -198,50 +230,91 @@ fun LibraryPage(
                 enter = fadeIn(tween(180)) + scaleIn(tween(180), initialScale = .9f),
                 exit = fadeOut(tween(140)) + scaleOut(tween(140), targetScale = .9f),
             ) {
-                IconAction(
-                    icon = MiuixIcons.Regular.Refresh,
-                    description = "刷新",
-                    onClick = onRefresh,
-                )
+                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                    val grid = viewMode == LIBRARY_VIEW_GRID
+                    IconAction(
+                        // The icon announces what tapping switches to.
+                        icon = if (grid) {
+                            MiuixIcons.Regular.ListView
+                        } else {
+                            MiuixIcons.Regular.GridView
+                        },
+                        description = if (grid) "切换为列表" else "切换为瀑布流",
+                        onClick = onToggleViewMode,
+                    )
+                    IconAction(
+                        icon = MiuixIcons.Regular.Refresh,
+                        description = "刷新",
+                        onClick = onRefresh,
+                    )
+                }
             }
         },
-    ) {
-        if (entries.isEmpty()) {
-            item {
-                EmptyState(
-                    title = "媒体库是空的",
-                    description = "下载完成的视频会自动出现在这里。也可以点右上角刷新，重新扫描 $directory。",
-                    icon = {
-                        androidx.compose.foundation.Image(
-                            imageVector = MiuixIcons.Regular.Photos,
-                            contentDescription = null,
-                            modifier = Modifier.size(40.dp),
+        content = {
+            if (viewMode != LIBRARY_VIEW_GRID) {
+                if (entries.isEmpty()) {
+                    item {
+                        EmptyLibraryState(directory, MiuixIcons.Regular.Photos)
+                    }
+                } else {
+                    items(entries, key = { it.uri }) { entry ->
+                        MediaCard(
+                            entry = entry,
+                            selectionMode = selectionMode,
+                            selected = entry.uri in selectedIds,
+                            thumbnails = thumbnails,
+                            blurCover = blurSensitiveCovers && entry.sensitive,
+                            onClick = {
+                                if (selectionMode) toggleSelection(entry.uri) else actionTarget = entry
+                            },
+                            onLongPress = {
+                                if (selectionMode) {
+                                    toggleSelection(entry.uri)
+                                } else {
+                                    selectionMode = true
+                                    selectedIds = selectedIds + entry.uri
+                                }
+                            },
+                            onToggle = { toggleSelection(entry.uri) },
                         )
-                    },
-                )
+                    }
+                }
+            }
+        },
+        staggeredContent = if (viewMode == LIBRARY_VIEW_GRID) {
+            {
+                if (entries.isEmpty()) {
+                    item {
+                        EmptyLibraryState(directory, MiuixIcons.Regular.Photos)
+                    }
+                } else {
+                    staggeredItems(entries, key = { it.uri }) { entry ->
+                        MediaCoverCard(
+                            entry = entry,
+                            selectionMode = selectionMode,
+                            selected = entry.uri in selectedIds,
+                            thumbnails = thumbnails,
+                            blurCover = blurSensitiveCovers && entry.sensitive,
+                            onClick = {
+                                if (selectionMode) toggleSelection(entry.uri) else actionTarget = entry
+                            },
+                            onLongPress = {
+                                if (selectionMode) {
+                                    toggleSelection(entry.uri)
+                                } else {
+                                    selectionMode = true
+                                    selectedIds = selectedIds + entry.uri
+                                }
+                            },
+                            onToggle = { toggleSelection(entry.uri) },
+                        )
+                    }
+                }
             }
         } else {
-            items(entries, key = { it.uri }) { entry ->
-                MediaCard(
-                    entry = entry,
-                    selectionMode = selectionMode,
-                    selected = entry.uri in selectedIds,
-                    onClick = {
-                        if (selectionMode) toggleSelection(entry.uri) else actionTarget = entry
-                    },
-                    onLongPress = {
-                        if (selectionMode) {
-                            toggleSelection(entry.uri)
-                        } else {
-                            selectionMode = true
-                            selectedIds = selectedIds + entry.uri
-                        }
-                    },
-                    onToggle = { toggleSelection(entry.uri) },
-                )
-            }
-        }
-    }
+            null
+        },
+    )
 
     actionTarget?.let { entry ->
         MediaActionDialog(
@@ -301,6 +374,8 @@ private fun MediaCard(
     entry: MediaEntry,
     selectionMode: Boolean,
     selected: Boolean,
+    thumbnails: ThumbnailCache?,
+    blurCover: Boolean,
     onClick: () -> Unit,
     onLongPress: () -> Unit,
     onToggle: () -> Unit,
@@ -316,6 +391,8 @@ private fun MediaCard(
                 .combinedClickable(onClick = onClick, onLongClick = onLongPress),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            ListCover(entry = entry, thumbnails = thumbnails, blurCover = blurCover)
+            Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
@@ -369,9 +446,196 @@ private fun MediaCard(
     }
 }
 
+@Composable
+private fun EmptyLibraryState(directory: String, icon: ImageVector) {
+    EmptyState(
+        title = "媒体库是空的",
+        description = "下载完成的视频会自动出现在这里。也可以点右上角刷新，重新扫描 $directory。",
+        icon = {
+            androidx.compose.foundation.Image(
+                imageVector = icon,
+                contentDescription = null,
+                modifier = Modifier.size(40.dp),
+            )
+        },
+    )
+}
+
+/**
+ * Two-column staggered card, modelled on the supplied design reference: the cover fills the width
+ * at its own aspect ratio (so cards interleave naturally), and the file name plus
+ * size · resolution · length sit on a gradient sampled from the artwork itself.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun MediaCoverCard(
+    entry: MediaEntry,
+    selectionMode: Boolean,
+    selected: Boolean,
+    thumbnails: ThumbnailCache?,
+    blurCover: Boolean,
+    onClick: () -> Unit,
+    onLongPress: () -> Unit,
+    onToggle: () -> Unit,
+) {
+    val cover by produceState<ImageBitmap?>(initialValue = null, entry.uri, thumbnails) {
+        value = thumbnails?.cover(entry)?.asImageBitmap()
+    }
+    val scrim = remember(cover) {
+        val source = cover
+        val sampled = if (source != null && thumbnails != null) {
+            thumbnails.scrimColorOf(source.asAndroidBitmap())
+        } else {
+            0xFF1C1B1F.toInt()
+        }
+        Color(sampled)
+    }
+
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(22.5.dp))
+            .combinedClickable(onClick = onClick, onLongClick = onLongPress),
+    ) {
+        if (cover != null) {
+            Image(
+                bitmap = cover!!,
+                contentDescription = entry.displayName,
+                contentScale = ContentScale.FillWidth,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(if (blurCover) Modifier.blur(20.dp) else Modifier),
+            )
+            // Frosted band: the same artwork, clipped to the metadata strip and blurred, so the
+            // gradient sits on a soft surface instead of a hard colour wash.
+            Box(
+                Modifier
+                    .align(Alignment.BottomStart)
+                    .fillMaxWidth()
+                    .height(BLUR_BAND_HEIGHT)
+                    .clip(
+                        RoundedCornerShape(
+                            bottomStart = 22.5.dp,
+                            bottomEnd = 22.5.dp,
+                        ),
+                    )
+                    .blur(BLUR_BAND_RADIUS),
+            ) {
+                Image(
+                    bitmap = cover!!,
+                    contentDescription = null,
+                    contentScale = ContentScale.FillWidth,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .align(Alignment.BottomCenter),
+                )
+            }
+        } else {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(4f / 5f)
+                    .background(MiuixTheme.colorScheme.surfaceContainer),
+            )
+        }
+
+        Box(
+            Modifier
+                .align(Alignment.BottomStart)
+                .fillMaxWidth()
+                .background(
+                    Brush.verticalGradient(
+                        0f to Color.Transparent,
+                        0.42f to scrim.copy(alpha = .55f),
+                        0.72f to scrim.copy(alpha = .92f),
+                        1f to scrim,
+                    ),
+                )
+                .padding(start = 14.dp, end = 14.dp, top = 30.dp, bottom = 12.dp),
+        ) {
+            Column {
+                Text(
+                    text = entry.displayName,
+                    color = Color.White,
+                    style = MiuixTheme.textStyles.body1,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    text = buildString {
+                        append(fileSizeLabel(entry.sizeBytes))
+                        if (entry.width > 0 && entry.height > 0) {
+                            append(" · ${entry.width}×${entry.height}")
+                        }
+                        if (entry.durationMs > 0) append(" · ${durationLabel(entry.durationMs)}")
+                    },
+                    color = Color.White.copy(alpha = .95f),
+                    style = MiuixTheme.textStyles.footnote2,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+
+        if (entry.sensitive) {
+            SensitiveBadge(Modifier.align(Alignment.TopStart).padding(8.dp))
+        }
+
+        AnimatedVisibility(
+            visible = selectionMode,
+            enter = fadeIn(tween(180)) + scaleIn(tween(180), initialScale = .8f),
+            exit = fadeOut(tween(120)) + scaleOut(tween(140), targetScale = .9f),
+            modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
+        ) {
+            Checkbox(
+                state = if (selected) ToggleableState.On else ToggleableState.Off,
+                onClick = onToggle,
+            )
+        }
+    }
+}
+
+/** Small square cover used by the list layout. */
+@Composable
+private fun ListCover(
+    entry: MediaEntry,
+    thumbnails: ThumbnailCache?,
+    blurCover: Boolean,
+) {
+    val cover by produceState<ImageBitmap?>(initialValue = null, entry.uri, thumbnails) {
+        value = thumbnails?.cover(entry)?.asImageBitmap()
+    }
+    Box(
+        Modifier
+            .size(width = 84.dp, height = 56.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(MiuixTheme.colorScheme.surfaceContainer),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (cover != null) {
+            Image(
+                bitmap = cover!!,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .then(if (blurCover) Modifier.blur(14.dp) else Modifier),
+            )
+        }
+    }
+}
+
 private fun durationLabel(millis: Long): String {
     val totalSeconds = millis / 1000
     val minutes = totalSeconds / 60
     val seconds = totalSeconds % 60
     return "%d:%02d".format(minutes, seconds)
 }
+
+/** Height of the frosted metadata strip at the bottom of a waterfall card. */
+private val BLUR_BAND_HEIGHT = 118.dp
+
+/** Blur applied inside that strip. */
+private val BLUR_BAND_RADIUS = 22.dp
