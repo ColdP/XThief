@@ -39,12 +39,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.BlurredEdgeTreatment
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.BlurEffect
@@ -57,9 +59,11 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import btm.m.xthief.data.LIBRARY_VIEW_GRID
 import btm.m.xthief.data.LIBRARY_VIEW_LIST
@@ -493,16 +497,29 @@ private fun MediaCoverCard(
         Color(sampled)
     }
 
+    // The card's height follows the artwork's aspect ratio, so the frosted strip is sized from the
+    // measured height: a landscape clip gets a short strip, a portrait one a taller strip.
+    var cardHeightPx by remember(entry.uri) { mutableIntStateOf(0) }
+    val density = LocalDensity.current
+    val bandHeight = with(density) {
+        if (cardHeightPx > 0) {
+            (cardHeightPx * BAND_HEIGHT_FRACTION).toDp().coerceIn(MIN_BAND_HEIGHT, MAX_BAND_HEIGHT)
+        } else {
+            FALLBACK_BAND_HEIGHT
+        }
+    }
+
     Box(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(22.5.dp))
+            .onSizeChanged { cardHeightPx = it.height }
             .combinedClickable(onClick = onClick, onLongClick = onLongPress),
     ) {
         if (cover != null) {
             // Sensitive covers use a render effect rather than Modifier.blur: blur() feathers its
             // edges, so a tall portrait card ends up only partly obscured.
-            val sensitiveBlurPx = with(LocalDensity.current) {
+            val sensitiveBlurPx = with(density) {
                 if (blurCover) SENSITIVE_BLUR.toPx() else 0f
             }
             Image(
@@ -521,46 +538,43 @@ private fun MediaCoverCard(
                         }
                     },
             )
-            // Frosted band: the same artwork, clipped to the metadata strip and blurred, so the
-            // gradient sits on a soft surface instead of a hard colour wash. It carries the
-            // sensitive blur too, otherwise it would repaint the lower part sharply.
-            Box(
-                Modifier
-                    .align(Alignment.BottomStart)
-                    .fillMaxWidth()
-                    .height(BLUR_BAND_HEIGHT)
-                    .clip(
-                        RoundedCornerShape(
-                            bottomStart = 22.5.dp,
-                            bottomEnd = 22.5.dp,
-                        ),
-                    )
-                    .blur(BLUR_BAND_RADIUS),
-            ) {
-                Image(
-                    bitmap = cover!!,
-                    contentDescription = null,
-                    contentScale = ContentScale.FillWidth,
-                    modifier = Modifier
+
+            // Staggered frosting instead of one hard-edged block: each layer covers a wider slice of
+            // the artwork with a lighter blur, so the image dissolves gradually into the tint.
+            // Unbounded edge treatment lets the blur bleed outwards; the card's clip trims it, which
+            // is what removes the visible seam.
+            FROST_LAYERS.forEach { layer ->
+                Box(
+                    Modifier
+                        .align(Alignment.BottomStart)
                         .fillMaxWidth()
-                        .align(Alignment.BottomCenter)
-                        .then(
-                            if (blurCover) {
-                                Modifier.graphicsLayer {
-                                    renderEffect = if (
-                                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-                                    ) {
-                                        val px = SENSITIVE_BLUR.toPx()
-                                        BlurEffect(px, px, TileMode.Clamp)
-                                    } else {
-                                        null
+                        .height(bandHeight * layer.heightFactor)
+                        .blur(layer.radius, edgeTreatment = BlurredEdgeTreatment.Unbounded),
+                ) {
+                    Image(
+                        bitmap = cover!!,
+                        contentDescription = null,
+                        contentScale = ContentScale.FillWidth,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .align(Alignment.BottomCenter)
+                            .then(
+                                if (blurCover) {
+                                    Modifier.graphicsLayer {
+                                        renderEffect =
+                                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                                val px = SENSITIVE_BLUR.toPx()
+                                                BlurEffect(px, px, TileMode.Clamp)
+                                            } else {
+                                                null
+                                            }
                                     }
-                                }
-                            } else {
-                                Modifier
-                            },
-                        ),
-                )
+                                } else {
+                                    Modifier
+                                },
+                            ),
+                    )
+                }
             }
         } else {
             Box(
@@ -575,23 +589,26 @@ private fun MediaCoverCard(
             Modifier
                 .align(Alignment.BottomStart)
                 .fillMaxWidth()
+                // Same height as the frosting layers, so the tint and the blur end together.
+                .height(bandHeight)
                 .background(
                     Brush.verticalGradient(
                         0f to Color.Transparent,
-                        0.42f to scrim.copy(alpha = .55f),
-                        0.72f to scrim.copy(alpha = .92f),
+                        0.40f to scrim.copy(alpha = .45f),
+                        0.70f to scrim.copy(alpha = .88f),
                         1f to scrim,
                     ),
-                )
-                .padding(start = 14.dp, end = 14.dp, top = 30.dp, bottom = 12.dp),
+                ),
+            contentAlignment = Alignment.BottomStart,
         ) {
-            Column {
+            Column(Modifier.padding(start = 14.dp, end = 14.dp, bottom = 12.dp)) {
                 Text(
                     text = entry.displayName,
                     color = Color.White,
                     style = MiuixTheme.textStyles.body1,
                     fontWeight = FontWeight.Bold,
-                    maxLines = 2,
+                    // One line only: a landscape clip is short, and a second line would eat into it.
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.height(3.dp))
@@ -677,11 +694,27 @@ private fun durationLabel(millis: Long): String {
     return "%d:%02d".format(minutes, seconds)
 }
 
-/** Height of the frosted metadata strip at the bottom of a waterfall card. */
-private val BLUR_BAND_HEIGHT = 118.dp
+/** Share of the card height taken by the frosted caption strip. */
+private const val BAND_HEIGHT_FRACTION = 0.44f
 
-/** Blur applied inside that strip. */
-private val BLUR_BAND_RADIUS = 22.dp
+/** Clamps so the strip stays legible on a short landscape clip and doesn't swallow a tall one. */
+private val MIN_BAND_HEIGHT = 56.dp
+private val MAX_BAND_HEIGHT = 148.dp
+
+/** Used for the first frame, before the card has reported its measured height. */
+private val FALLBACK_BAND_HEIGHT = 84.dp
 
 /** Blur applied to the cover of a sensitive entry, so the whole card is evenly obscured. */
 private val SENSITIVE_BLUR = 26.dp
+
+/**
+ * Frosting layers, ordered widest/lightest to narrowest/strongest, so artwork blurs progressively
+ * towards the caption instead of switching at a hard seam.
+ */
+private val FROST_LAYERS = listOf(
+    FrostLayer(heightFactor = 1f, radius = 8.dp),
+    FrostLayer(heightFactor = 0.66f, radius = 17.dp),
+    FrostLayer(heightFactor = 0.34f, radius = 26.dp),
+)
+
+private data class FrostLayer(val heightFactor: Float, val radius: Dp)
