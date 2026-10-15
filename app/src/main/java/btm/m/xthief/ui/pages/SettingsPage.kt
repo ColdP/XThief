@@ -121,6 +121,19 @@ fun SettingsPage(
     var cookieUserDraft by remember { mutableStateOf(settings.cookieUserId) }
     var cookieGuestDraft by remember { mutableStateOf(settings.cookieGuestId) }
     val context = LocalContext.current
+    // Notification permission is requested when the user turns the switch on, not at launch.
+    val notificationPermission = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+        onResult = { },
+    )
+    fun requestNotificationPermission() {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU) return
+        val granted = context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (!granted) {
+            notificationPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
     val folderPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree(),
     ) { uri ->
@@ -173,7 +186,11 @@ fun SettingsPage(
                 )
                 SwitchPreference(
                     checked = settings.showDownloadNotifications,
-                    onCheckedChange = { value -> update { it.copy(showDownloadNotifications = value) } },
+                    onCheckedChange = { value ->
+                        update { it.copy(showDownloadNotifications = value) }
+                        // Permission is asked here, in context, instead of on app launch.
+                        if (value) requestNotificationPermission()
+                    },
                     title = "下载完成通知",
                     summary = "任务完成时发送系统通知",
                 )

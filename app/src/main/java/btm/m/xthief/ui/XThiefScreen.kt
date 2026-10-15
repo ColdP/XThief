@@ -163,18 +163,8 @@ fun XThiefScreen(
         container.historyStore.prune(settings.keepHistoryDays)
     }
 
-    // Ask for the notification permission once, so finished downloads can be announced.
-    val permissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission(),
-        onResult = { },
-    )
-    LaunchedEffect(settings.showDownloadNotifications) {
-        if (!settings.showDownloadNotifications) return@LaunchedEffect
-        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU) return@LaunchedEffect
-        val granted = context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) ==
-            android.content.pm.PackageManager.PERMISSION_GRANTED
-        if (!granted) permissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
-    }
+    // Notification permission is requested from the settings switch itself, so launching the app
+    // (or being handed a shared link) never throws a system dialog at the user.
 
     // Predictive back drives the second-level page away under the finger.
     val backState = rememberMomentumPredictiveBack(

@@ -87,6 +87,16 @@ class XDownloadManager(
     fun task(id: String): DownloadTask? = _tasks.value.firstOrNull { it.id == id }
 
     fun enqueue(media: TweetMedia, variant: VideoVariant, settings: XThiefSettings = settingsStore.current): String {
+        // The same rendition must never be queued twice: a double tap (or a screen rebuild while a
+        // task is still running) would otherwise start a second download of an identical file.
+        val duplicate = _tasks.value.firstOrNull { existing ->
+            existing.tweetId == media.tweetId &&
+                existing.variant.url == variant.url &&
+                existing.status != DownloadStatus.FAILED &&
+                existing.status != DownloadStatus.CANCELLED
+        }
+        if (duplicate != null) return duplicate.id
+
         val fileName = buildFileName(media, variant, settings)
         val task = DownloadTask(
             id = UUID.randomUUID().toString(),
