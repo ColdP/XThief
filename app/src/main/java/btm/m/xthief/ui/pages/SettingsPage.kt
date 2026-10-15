@@ -299,6 +299,12 @@ fun SettingsPage(
         }
         item {
             SectionCard(title = "记录与媒体") {
+                SwitchPreference(
+                    checked = settings.shortVideoMode,
+                    onCheckedChange = { value -> update { it.copy(shortVideoMode = value) } },
+                    title = "短视频模式",
+                    summary = "播放页上下滑动切换视频",
+                )
                 EditableSliderPreference(
                     value = settings.keepHistoryDays.toFloat(),
                     onValueChange = { value -> update { it.copy(keepHistoryDays = value.toInt()) } },

@@ -28,6 +28,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -161,6 +162,9 @@ private val PLAYER_GLASS_TINT = Color.White.copy(alpha = .42f)
 private const val CHROME_ANIM_MS = 340
 private val CHROME_HIDE_BLUR = 16.dp
 
+/** Fraction of the screen height a swipe must cover to change clip in short-video mode. */
+private const val SWIPE_THRESHOLD_FRACTION = .12f
+
 /** How close the player must get to a requested position before polling resumes from it. */
 private const val SEEK_SETTLE_MS = 1_200L
 
@@ -229,6 +233,10 @@ private fun averageColorOfRegion(
 fun PlayerScreen(
     source: PlayerSource,
     favorite: Boolean,
+    /** When true, a vertical swipe moves to the previous/next clip. */
+    shortVideoMode: Boolean = false,
+    /** -1 = previous clip, +1 = next clip. */
+    onSwitchVideo: (Int) -> Unit = {},
     onToggleFavorite: () -> Unit,
     onOpenWith: () -> Unit,
     onInfo: () -> Unit,
@@ -259,6 +267,9 @@ fun PlayerScreen(
     /** Measured size of the video surface, so the letterbox follows rotation. */
     var viewSize by remember { mutableStateOf(IntSize.Zero) }
     var scale by remember { mutableFloatStateOf(1f) }
+    val zoomedIn = scale > 1f
+    /** Accumulated vertical drag, used to decide whether a swipe changes clip. */
+    var swipeAccum by remember { mutableFloatStateOf(0f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
     var chromeVisible by remember { mutableStateOf(true) }
 
@@ -491,10 +502,27 @@ fun PlayerScreen(
                             },
                         )
                     }
-                    .pointerInput(Unit) {
-                        detectTransformGestures { _, pan, zoom, _ ->
-                            scale = (scale * zoom).coerceIn(1f, 4f)
-                            offset = if (scale > 1f) offset + pan else Offset.Zero
+                    .pointerInput(zoomedIn, shortVideoMode) {
+                        // In short-video mode an un-zoomed vertical swipe changes clip; zoomed in,
+                        // the same drag pans the picture instead.
+                        if (shortVideoMode && !zoomedIn) {
+                            detectVerticalDragGestures(
+                                onDragCancel = { swipeAccum = 0f },
+                                onDragEnd = {
+                                    val threshold = size.height * SWIPE_THRESHOLD_FRACTION
+                                    if (kotlin.math.abs(swipeAccum) > threshold) {
+                                        // Swiping up advances, like a feed.
+                                        onSwitchVideo(if (swipeAccum < 0f) 1 else -1)
+                                    }
+                                    swipeAccum = 0f
+                                },
+                                onVerticalDrag = { _, amount -> swipeAccum += amount },
+                            )
+                        } else {
+                            detectTransformGestures { _, pan, zoom, _ ->
+                                scale = (scale * zoom).coerceIn(1f, 4f)
+                                offset = if (scale > 1f) offset + pan else Offset.Zero
+                            }
                         }
                     },
             )

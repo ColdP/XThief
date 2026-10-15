@@ -136,6 +136,29 @@ fun XThiefScreen(
         onBack = { playerSource = null },
         maxProgress = 0.85f,
     )
+
+    // Playback queue for short-video mode: the media library in its displayed order, so an upward
+    // swipe walks the same list the user was browsing.
+    val playerQueue = remember(library, history) {
+        library.map { entry ->
+            PlayerSource(
+                uri = entry.uri,
+                title = entry.displayName,
+                mediaFileName = entry.fileName,
+                recordId = history.firstOrNull { it.fileName == entry.fileName }?.id,
+                subtitle = buildString {
+                    append(fileSizeLabel(entry.sizeBytes))
+                    if (entry.width > 0 && entry.height > 0) {
+                        append(" · ${entry.width}×${entry.height}")
+                    }
+                    if (entry.durationMs > 0) {
+                        val total = entry.durationMs / 1000
+                        append(" · %d:%02d".format(total / 60, total % 60))
+                    }
+                },
+            )
+        }
+    }
     val backdrop = rememberLayerBackdrop()
     val selectedIndex = remember { mutableIntStateOf(tab.ordinal) }
     if (selectedIndex.intValue != tab.ordinal) selectedIndex.intValue = tab.ordinal
@@ -470,6 +493,16 @@ fun XThiefScreen(
                             PlayerScreen(
                                 source = source,
                                 favorite = record?.favorite == true,
+                                shortVideoMode = settings.shortVideoMode,
+                                onSwitchVideo = { direction ->
+                                    val index = playerQueue.indexOfFirst { it.uri == source.uri }
+                                    if (index >= 0) {
+                                        val next = index + direction
+                                        if (next in playerQueue.indices) {
+                                            playerSource = playerQueue[next]
+                                        }
+                                    }
+                                },
                                 onToggleFavorite = {
                                     record?.let {
                                         container.historyStore.setFavorite(it.id, !it.favorite)
