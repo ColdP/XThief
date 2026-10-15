@@ -79,6 +79,8 @@ fun BlurFadeContent(
     modifier: Modifier = Modifier,
     /** Fixed blur radius; when null the radius scales with the measured height. */
     maxBlur: Dp? = null,
+    /** Set false when placing this inside a Row, so it wraps its content instead of filling. */
+    fillWidth: Boolean = true,
     content: @Composable () -> Unit,
 ) {
     val settled by animateFloatAsState(
@@ -95,7 +97,7 @@ fun BlurFadeContent(
     val radius: Dp = effectiveBlur * (1f - settled.coerceIn(0f, 1f))
     Column(
         modifier
-            .fillMaxWidth()
+            .then(if (fillWidth) Modifier.fillMaxWidth() else Modifier)
             .onSizeChanged { heightPx = it.height }
             .graphicsLayer { alpha = .55f + .45f * settled.coerceIn(0f, 1f) }
             .then(if (radius > .1.dp) Modifier.blur(radius) else Modifier),

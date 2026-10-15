@@ -2,17 +2,19 @@
 // Copyright 2026 btm_m
 package btm.m.xthief.ui.pages
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import android.graphics.Matrix
 import android.graphics.SurfaceTexture
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.net.Uri
 import android.view.Surface
 import android.view.TextureView
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -35,6 +37,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -48,11 +51,15 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import kotlinx.coroutines.delay
@@ -72,19 +79,25 @@ import top.yukonga.miuix.kmp.icon.extended.Forward
 import top.yukonga.miuix.kmp.icon.extended.Info
 import top.yukonga.miuix.kmp.icon.extended.Pause
 import top.yukonga.miuix.kmp.icon.extended.Play
+import top.yukonga.miuix.kmp.icon.extended.Share
 import top.yukonga.miuix.kmp.icon.extended.VolumeOff
 import top.yukonga.miuix.kmp.icon.extended.VolumeUp
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import btm.m.xthief.data.NavigationStyle
 import btm.m.xthief.ui.TopBarMaterial
+import btm.m.xthief.ui.components.BlurFadeContent
 import btm.m.xthief.ui.components.GlassFloatingToolbar
 import btm.m.xthief.ui.components.GlassToolbarIconButton
 import btm.m.xthief.ui.components.LocalPageBackdrop
+import btm.m.xthief.ui.components.navHideAnimation
 
 /** What the player is showing. */
 data class PlayerSource(
     val uri: String,
     val title: String,
     val subtitle: String,
+    /** History record backing this clip, so favouriting has something to write to. */
+    val recordId: String? = null,
     /** MediaStore file name when opened from the library, so delete can act on it. */
     val mediaFileName: String? = null,
 )
@@ -112,14 +125,20 @@ private val TRANSPORT_ICON_SIZE = NAV_ICON_SIZE * 0.8f
 
 /**
  * Light frosted scrim for the player's glass bars. The shared default is the theme surface at 80%
- * alpha, which reads as a flat block over video; 42% white keeps the backdrop visible while the
- * black progress bar stays legible on top of it.
+ * alpha, which reads as a flat block over video.
  */
 private val PLAYER_GLASS_TINT = Color.White.copy(alpha = .42f)
 
-/** Progress bar: black at 80% over a black 15% track. */
-private val PROGRESS_FOREGROUND = Color.Black.copy(alpha = .80f)
+/**
+ * Progress bar tinted like the transport buttons (black), just at a lower opacity, so it reads as a
+ * translucent bar rather than a high-contrast stripe.
+ */
+private val PROGRESS_FOREGROUND = Color.Black.copy(alpha = .50f)
 private val PROGRESS_TRACK = Color.Black.copy(alpha = .15f)
+
+/** Chrome hide/show timing, matched to the bottom navigation's own hide animation. */
+private const val CHROME_ANIM_MS = 340
+private val CHROME_HIDE_BLUR = 16.dp
 
 /**
  * The built-in player.
@@ -134,10 +153,12 @@ fun PlayerScreen(
     onToggleFavorite: () -> Unit,
     onOpenWith: () -> Unit,
     onInfo: () -> Unit,
+    onShare: () -> Unit,
     onDelete: () -> Unit,
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
+    val view = LocalView.current
     val backdrop = rememberLayerBackdrop()
     val scroll = MiuixScrollBehavior()
     val surface = MiuixTheme.colorScheme.surface
@@ -150,9 +171,17 @@ fun PlayerScreen(
     var positionMs by remember { mutableLongStateOf(0L) }
     var durationMs by remember { mutableLongStateOf(0L) }
     var scrubMs by remember { mutableLongStateOf(0L) }
+    var videoWidth by remember { mutableIntStateOf(0) }
+    var videoHeight by remember { mutableIntStateOf(0) }
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
-    var controlsVisible by remember { mutableStateOf(true) }
+    var chromeVisible by remember { mutableStateOf(true) }
+
+    val chromeProgress by animateFloatAsState(
+        targetValue = if (chromeVisible) 1f else 0f,
+        animationSpec = tween(CHROME_ANIM_MS, easing = FastOutSlowInEasing),
+        label = "chrome",
+    )
 
     DisposableEffect(source.uri) {
         val media = MediaPlayer().apply {
@@ -167,6 +196,10 @@ fun PlayerScreen(
                 durationMs = prepared.duration.toLong().coerceAtLeast(0L)
                 prepared.start()
                 isPlaying = true
+            }
+            setOnVideoSizeChangedListener { _, width, height ->
+                videoWidth = width
+                videoHeight = height
             }
             setOnCompletionListener { isPlaying = false }
             prepareAsync()
@@ -193,9 +226,29 @@ fun PlayerScreen(
         }
     }
 
+    // Immersive mode: hiding the chrome also hides the status bar, and leaving restores it.
+    DisposableEffect(chromeVisible) {
+        val window = context.findActivity()?.window
+        val controller = window?.let { WindowCompat.getInsetsController(it, view) }
+        if (controller != null) {
+            controller.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            if (chromeVisible) {
+                controller.show(WindowInsetsCompat.Type.statusBars())
+            } else {
+                controller.hide(WindowInsetsCompat.Type.statusBars())
+            }
+        }
+        onDispose {
+            if (!chromeVisible) {
+                controller?.show(WindowInsetsCompat.Type.statusBars())
+            }
+        }
+    }
+
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        // Publish this page's backdrop so the shared glass components (GlassFloatingToolbar,
-        // GlassToolbarIconButton) sample the video instead of falling back to a flat tint.
+        // Publish this page's backdrop so the shared glass components sample the video instead of
+        // falling back to a flat tint.
         CompositionLocalProvider(LocalPageBackdrop provides backdrop) {
             // Recorded once here; the glass bars above sample this backdrop.
             Box(Modifier.fillMaxSize().layerBackdrop(backdrop)) {
@@ -228,6 +281,34 @@ fun PlayerScreen(
                             }
                         }
                     },
+                    update = { textureView ->
+                        // Letterbox to the video's own aspect ratio: without this the TextureView
+                        // stretches the picture to fill the screen.
+                        val vw = videoWidth
+                        val vh = videoHeight
+                        if (vw <= 0 || vh <= 0 || textureView.width <= 0 || textureView.height <= 0) {
+                            return@AndroidView
+                        }
+                        val viewRatio = textureView.width.toFloat() / textureView.height
+                        val videoRatio = vw.toFloat() / vh
+                        val matrix = Matrix()
+                        if (videoRatio > viewRatio) {
+                            matrix.setScale(
+                                1f,
+                                viewRatio / videoRatio,
+                                textureView.width / 2f,
+                                textureView.height / 2f,
+                            )
+                        } else {
+                            matrix.setScale(
+                                videoRatio / viewRatio,
+                                1f,
+                                textureView.width / 2f,
+                                textureView.height / 2f,
+                            )
+                        }
+                        textureView.setTransform(matrix)
+                    },
                     modifier = Modifier
                         .fillMaxSize()
                         .graphicsLayer {
@@ -246,7 +327,7 @@ fun PlayerScreen(
                     .fillMaxSize()
                     .pointerInput(Unit) {
                         detectTapGestures(
-                            onTap = { controlsVisible = !controlsVisible },
+                            onTap = { chromeVisible = !chromeVisible },
                             onDoubleTap = { togglePlayback(player) { isPlaying = it } },
                             onLongPress = { applySpeed(player, 2f) },
                             onPress = {
@@ -265,38 +346,59 @@ fun PlayerScreen(
                     },
             )
 
-            if (controlsVisible) {
-                // Shared top-bar material. progress = 1 keeps it collapsed by default; the small
-                // top app bar is the collapsed layout, so it never expands over the video.
-                Box(Modifier.align(Alignment.TopCenter).fillMaxWidth()) {
-                    TopBarMaterial(
-                        backdrop = backdrop,
-                        surface = surface,
-                        progress = 1f,
-                        tintedWhenExpanded = false,
-                    )
-                    SmallTopAppBar(
-                        title = source.title,
-                        subtitle = source.subtitle,
-                        color = Color.Transparent,
-                        scrollBehavior = scroll,
-                        navigationIcon = {
-                            GlassToolbarIconButton(
-                                icon = MiuixIcons.Regular.ChevronBackward,
-                                description = "返回",
-                                backdrop = backdrop,
-                                collapsedFraction = 1f,
-                                containerPadding = PaddingValues(start = 8.dp),
-                                onClick = onBack,
-                            )
-                        },
-                    )
+            // Top bar: a plain blur + fade, no slide.
+            Box(Modifier.align(Alignment.TopCenter).fillMaxWidth()) {
+                BlurFadeContent(visible = chromeVisible, maxBlur = 12.dp) {
+                    Box {
+                        TopBarMaterial(
+                            backdrop = backdrop,
+                            surface = surface,
+                            progress = 1f,
+                            tintedWhenExpanded = false,
+                        )
+                        SmallTopAppBar(
+                            title = source.title,
+                            subtitle = source.subtitle,
+                            color = Color.Transparent,
+                            scrollBehavior = scroll,
+                            navigationIcon = {
+                                // Wrapped so the capsule shares the title's vertical centre.
+                                Box(
+                                    Modifier.height(TOP_BAR_ICON_SLOT),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    GlassToolbarIconButton(
+                                        icon = MiuixIcons.Regular.ChevronBackward,
+                                        description = "返回",
+                                        backdrop = backdrop,
+                                        collapsedFraction = 1f,
+                                        containerPadding = PaddingValues(start = 8.dp),
+                                        onClick = onBack,
+                                    )
+                                }
+                            },
+                        )
+                    }
                 }
+            }
 
-                PlayerBottomBars(
+            // Bottom bars: blur + fade + slide off-screen, exactly like the bottom navigation.
+            Column(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(vertical = 28.dp)
+                    .navHideAnimation(
+                        progress = chromeProgress,
+                        maxBlur = CHROME_HIDE_BLUR,
+                        style = NavigationStyle.HYPER_OS_FLOATING,
+                    ),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                PlayerTransportCard(
                     isPlaying = isPlaying,
                     isMuted = isMuted,
-                    favorite = favorite,
                     positionMs = if (isScrubbing) scrubMs else positionMs,
                     durationMs = durationMs,
                     scrubbing = isScrubbing,
@@ -307,10 +409,6 @@ fun PlayerScreen(
                         val volume = if (next) 0f else 1f
                         runCatching { player?.setVolume(volume, volume) }
                     },
-                    onToggleFavorite = onToggleFavorite,
-                    onOpenWith = onOpenWith,
-                    onInfo = onInfo,
-                    onDelete = onDelete,
                     onScrubStart = {
                         scrubMs = positionMs
                         isScrubbing = true
@@ -323,12 +421,28 @@ fun PlayerScreen(
                         positionMs = scrubMs
                         isScrubbing = false
                     },
-                    modifier = Modifier.align(Alignment.BottomCenter),
+                )
+
+                PlayerActionToolbar(
+                    favorite = favorite,
+                    onToggleFavorite = onToggleFavorite,
+                    onOpenWith = onOpenWith,
+                    onInfo = onInfo,
+                    onShare = onShare,
+                    onDelete = onDelete,
                 )
             }
         }
     }
 }
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
+private val TOP_BAR_ICON_SLOT = 52.dp
 
 private fun togglePlayback(player: MediaPlayer?, onChanged: (Boolean) -> Unit) {
     val media = player ?: return
@@ -349,145 +463,122 @@ private fun applySpeed(player: MediaPlayer?, value: Float) {
 }
 
 /**
- * The transport capsule and the actions toolbar. Both are the project's [GlassFloatingToolbar], so
- * their material is identical; only their height, shape and content differ.
- *
- * While scrubbing the transport capsule grows, drops the play/mute buttons so the bar can run edge
- * to edge, turns into a rounded rectangle, and puts both timestamps underneath the bar.
+ * Transport capsule. While scrubbing the play/mute buttons blur out, the bar runs edge to edge,
+ * the capsule becomes a rounded rectangle and both timestamps fade in underneath.
  */
 @Composable
-private fun PlayerBottomBars(
+private fun PlayerTransportCard(
     isPlaying: Boolean,
     isMuted: Boolean,
-    favorite: Boolean,
     positionMs: Long,
     durationMs: Long,
     scrubbing: Boolean,
     onTogglePlay: () -> Unit,
     onToggleMute: () -> Unit,
-    onToggleFavorite: () -> Unit,
-    onOpenWith: () -> Unit,
-    onInfo: () -> Unit,
-    onDelete: () -> Unit,
     onScrubStart: () -> Unit,
     onScrub: (Float) -> Unit,
     onScrubEnd: () -> Unit,
-    modifier: Modifier = Modifier,
 ) {
-    Column(
-        modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 28.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+    GlassFloatingToolbar(
+        modifier = Modifier
+            .fillMaxWidth(NAV_WIDTH_FRACTION)
+            .height(if (scrubbing) CARD_SCRUB_HEIGHT else CARD_HEIGHT),
+        surfaceTint = PLAYER_GLASS_TINT,
+        cornerRadius = if (scrubbing) SCRUB_CARD_RADIUS else 50.dp,
     ) {
-        val cardHeight by animateDpAsState(
-            targetValue = if (scrubbing) CARD_SCRUB_HEIGHT else CARD_HEIGHT,
-            animationSpec = tween(220),
-            label = "playerCardHeight",
-        )
-        GlassFloatingToolbar(
-            modifier = Modifier.fillMaxWidth(NAV_WIDTH_FRACTION).height(cardHeight),
-            surfaceTint = PLAYER_GLASS_TINT,
-            cornerRadius = if (scrubbing) SCRUB_CARD_RADIUS else 50.dp,
+        Column(
+            Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 6.dp),
         ) {
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 4.dp, vertical = 6.dp),
-            ) {
-                Row(
-                    Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    // The buttons give way to the bar while scrubbing.
-                    AnimatedVisibility(visible = !scrubbing) {
-                        IconButton(onClick = onTogglePlay) {
-                            Icon(
-                                if (isPlaying) {
-                                    MiuixIcons.Regular.Pause
-                                } else {
-                                    MiuixIcons.Regular.Play
-                                },
-                                if (isPlaying) "暂停" else "播放",
-                                Modifier.size(TRANSPORT_ICON_SIZE),
-                                tint = Color.Black,
-                            )
-                        }
-                    }
-                    ScrubBar(
-                        positionMs = positionMs,
-                        durationMs = durationMs,
-                        onScrubStart = onScrubStart,
-                        onScrub = onScrub,
-                        onScrubEnd = onScrubEnd,
-                        modifier = Modifier.weight(1f),
-                    )
-                    AnimatedVisibility(visible = !scrubbing) {
-                        IconButton(onClick = onToggleMute) {
-                            Icon(
-                                if (isMuted) {
-                                    MiuixIcons.Regular.VolumeOff
-                                } else {
-                                    MiuixIcons.Regular.VolumeUp
-                                },
-                                if (isMuted) "取消静音" else "静音",
-                                Modifier.size(TRANSPORT_ICON_SIZE),
-                                tint = Color.Black,
-                            )
-                        }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                BlurFadeContent(visible = !scrubbing, maxBlur = 8.dp, fillWidth = false) {
+                    IconButton(onClick = onTogglePlay) {
+                        Icon(
+                            if (isPlaying) MiuixIcons.Regular.Pause else MiuixIcons.Regular.Play,
+                            if (isPlaying) "暂停" else "播放",
+                            Modifier.size(TRANSPORT_ICON_SIZE),
+                            tint = Color.Black,
+                        )
                     }
                 }
-                // Both timestamps sit under the bar, and only while scrubbing.
-                AnimatedVisibility(
-                    visible = scrubbing,
-                    enter = fadeIn(tween(180)),
-                    exit = fadeOut(tween(120)),
-                ) {
-                    Row(
-                        Modifier.fillMaxWidth().padding(top = 4.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                    ) {
-                        Text(
-                            text = formatTime(positionMs),
-                            style = MiuixTheme.textStyles.footnote2,
-                            color = Color.Black,
-                            textAlign = TextAlign.Start,
-                        )
-                        Text(
-                            text = formatTime(durationMs),
-                            style = MiuixTheme.textStyles.footnote2,
-                            color = Color.Black,
-                            textAlign = TextAlign.End,
+                ScrubBar(
+                    positionMs = positionMs,
+                    durationMs = durationMs,
+                    onScrubStart = onScrubStart,
+                    onScrub = onScrub,
+                    onScrubEnd = onScrubEnd,
+                    modifier = Modifier.weight(1f),
+                )
+                BlurFadeContent(visible = !scrubbing, maxBlur = 8.dp, fillWidth = false) {
+                    IconButton(onClick = onToggleMute) {
+                        Icon(
+                            if (isMuted) {
+                                MiuixIcons.Regular.VolumeOff
+                            } else {
+                                MiuixIcons.Regular.VolumeUp
+                            },
+                            if (isMuted) "取消静音" else "静音",
+                            Modifier.size(TRANSPORT_ICON_SIZE),
+                            tint = Color.Black,
                         )
                     }
+                }
+            }
+            // Both timestamps sit under the bar, and only while scrubbing.
+            BlurFadeContent(visible = scrubbing, maxBlur = 6.dp) {
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        text = formatTime(positionMs),
+                        style = MiuixTheme.textStyles.footnote2,
+                        color = Color.Black,
+                        textAlign = TextAlign.Start,
+                    )
+                    Text(
+                        text = formatTime(durationMs),
+                        style = MiuixTheme.textStyles.footnote2,
+                        color = Color.Black,
+                        textAlign = TextAlign.End,
+                    )
                 }
             }
         }
+    }
+}
 
-        // Same width, height, icon size and label metrics as the floating navigation bar.
-        GlassFloatingToolbar(
-            modifier = Modifier.fillMaxWidth(NAV_WIDTH_FRACTION).height(NAV_HEIGHT),
-            surfaceTint = PLAYER_GLASS_TINT,
+/** The five actions, at the floating navigation bar's width, height and metrics. */
+@Composable
+private fun PlayerActionToolbar(
+    favorite: Boolean,
+    onToggleFavorite: () -> Unit,
+    onOpenWith: () -> Unit,
+    onInfo: () -> Unit,
+    onShare: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    GlassFloatingToolbar(
+        modifier = Modifier.fillMaxWidth(NAV_WIDTH_FRACTION).height(NAV_HEIGHT),
+        surfaceTint = PLAYER_GLASS_TINT,
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 2.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 4.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                PlayerToolbarItem(
-                    icon = if (favorite) {
-                        MiuixIcons.Regular.FavoritesFill
-                    } else {
-                        MiuixIcons.Regular.Favorites
-                    },
-                    label = "收藏",
-                    onClick = onToggleFavorite,
-                )
-                PlayerToolbarItem(MiuixIcons.Regular.Forward, "打开为", onOpenWith)
-                PlayerToolbarItem(MiuixIcons.Regular.Info, "信息", onInfo)
-                PlayerToolbarItem(MiuixIcons.Regular.Delete, "删除", onDelete)
-            }
+            PlayerToolbarItem(
+                icon = if (favorite) {
+                    MiuixIcons.Regular.FavoritesFill
+                } else {
+                    MiuixIcons.Regular.Favorites
+                },
+                label = "收藏",
+                onClick = onToggleFavorite,
+            )
+            PlayerToolbarItem(MiuixIcons.Regular.Forward, "打开", onOpenWith)
+            PlayerToolbarItem(MiuixIcons.Regular.Info, "信息", onInfo)
+            PlayerToolbarItem(MiuixIcons.Regular.Share, "分享", onShare)
+            PlayerToolbarItem(MiuixIcons.Regular.Delete, "删除", onDelete)
         }
     }
 }
@@ -560,7 +651,7 @@ private fun PlayerToolbarItem(
         modifier = Modifier
             .clip(RoundedCornerShape(50.dp))
             .pointerInput(Unit) { detectTapGestures(onTap = { onClick() }) }
-            .padding(horizontal = 6.dp, vertical = 2.dp),
+            .padding(horizontal = 4.dp, vertical = 2.dp),
     ) {
         Icon(icon, label, Modifier.size(NAV_ICON_SIZE), tint = Color.Black)
         Text(

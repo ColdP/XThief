@@ -2,12 +2,14 @@
 // Copyright 2026 btm_m
 package btm.m.xthief.ui
 
+import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -29,9 +31,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import btm.m.xthief.XThiefApplication
 import btm.m.xthief.data.DownloadRecord
@@ -44,6 +51,8 @@ import btm.m.xthief.ui.components.LocalDialogBackdrop
 import btm.m.xthief.ui.components.NavAnimationTiming
 import btm.m.xthief.ui.components.ToolbarAnimationTiming
 import btm.m.xthief.ui.components.XThiefDialog
+import btm.m.xthief.ui.momentumBackTransform
+import btm.m.xthief.ui.rememberMomentumPredictiveBack
 import btm.m.xthief.ui.pages.AboutScreen
 import btm.m.xthief.ui.pages.DownloadTab
 import btm.m.xthief.ui.pages.HistoryPage
@@ -116,8 +125,17 @@ fun XThiefScreen(
     var tab by remember { mutableStateOf(MainTab.PARSE) }
     var pageStack by remember { mutableStateOf<List<DetailPage>>(emptyList()) }
     // Non-null while the built-in player covers the screen; it is not a DetailPage because it
-    // carries the clip it is playing.
+    // carries the clip it is playing. `lastPlayerSource` keeps the content alive through the exit
+    // animation, after `playerSource` has already become null.
     var playerSource by remember { mutableStateOf<PlayerSource?>(null) }
+    var lastPlayerSource by remember { mutableStateOf<PlayerSource?>(null) }
+    if (playerSource != null) lastPlayerSource = playerSource
+    val density = LocalDensity.current
+    val playerBackState = rememberMomentumPredictiveBack(
+        enabled = playerSource != null,
+        onBack = { playerSource = null },
+        maxProgress = 0.85f,
+    )
     val backdrop = rememberLayerBackdrop()
     val selectedIndex = remember { mutableIntStateOf(tab.ordinal) }
     if (selectedIndex.intValue != tab.ordinal) selectedIndex.intValue = tab.ordinal
@@ -211,6 +229,7 @@ fun XThiefScreen(
                                         uri = record.uri,
                                         title = record.fileName.ifBlank { "未命名视频" },
                                         mediaFileName = record.fileName,
+                                        recordId = record.id,
                                         subtitle = record.variantLabel,
                                     )
                                 },
@@ -232,6 +251,11 @@ fun XThiefScreen(
                                         uri = entry.uri,
                                         title = entry.displayName,
                                         mediaFileName = entry.fileName,
+                                        // Library entries are matched to their history record by
+                                        // file name, so favouriting has a record to write to.
+                                        recordId = history
+                                            .firstOrNull { it.fileName == entry.fileName }
+                                            ?.id,
                                         subtitle = buildString {
                                             append(fileSizeLabel(entry.sizeBytes))
                                             if (entry.width > 0 && entry.height > 0) {
@@ -392,56 +416,107 @@ fun XThiefScreen(
                     }
                 }
 
-                // Built-in player: covers the whole screen while a clip is open.
-                playerSource?.let { source ->
-                    val record = history.firstOrNull { it.fileName == source.mediaFileName }
-                    var confirmPlayerDelete by remember(source.uri) { mutableStateOf(false) }
-                    BackHandler(enabled = true) { playerSource = null }
-                    PlayerScreen(
-                        source = source,
-                        favorite = record?.favorite == true,
-                        onToggleFavorite = {
-                            record?.let {
-                                container.historyStore.setFavorite(it.id, !it.favorite)
-                            }
-                        },
-                        onOpenWith = { openUri(container, source.uri) },
-                        onInfo = {
-                            toast(
-                                context,
-                                buildString {
-                                    append(source.title)
-                                    if (source.subtitle.isNotBlank()) append("\n${source.subtitle}")
-                                    append("\n${source.uri}")
-                                },
-                            )
-                        },
-                        onDelete = { confirmPlayerDelete = true },
-                        onBack = { playerSource = null },
-                    )
-                    if (confirmPlayerDelete) {
-                        XThiefDialog(
-                            title = "删除视频",
-                            message = "「${source.title}」将从设备存储中永久删除。",
-                            confirmText = "删除",
-                            destructive = true,
-                            onConfirm = {
-                                confirmPlayerDelete = false
-                                val target = library.firstOrNull {
-                                    it.fileName == source.mediaFileName
+                // Built-in player: covers the whole screen while a clip is open. It shares the
+                // detail page's transition and predictive-back transform, plus a blur so the two
+                // layers dissolve into each other.
+                val playerVisible = playerSource != null
+                val playerBlur by animateFloatAsState(
+                    targetValue = if (playerVisible) 0f else PLAYER_EXIT_BLUR,
+                    animationSpec = tween(
+                        durationMillis = if (playerVisible) 252 else 207,
+                        easing = FastOutSlowInEasing,
+                    ),
+                    label = "playerBlur",
+                )
+                AnimatedVisibility(
+                    visible = playerVisible,
+                    enter = slideInHorizontally(
+                        animationSpec = tween(252, easing = FastOutSlowInEasing),
+                        initialOffsetX = { it / 7 },
+                    ) + fadeIn(tween(189)) + scaleIn(
+                        animationSpec = tween(252, easing = FastOutSlowInEasing),
+                        initialScale = .985f,
+                    ),
+                    exit = slideOutHorizontally(
+                        animationSpec = tween(207, easing = FastOutSlowInEasing),
+                        targetOffsetX = { -it / 3 },
+                    ) + fadeOut(tween(162)) + scaleOut(
+                        animationSpec = tween(207, easing = FastOutSlowInEasing),
+                        targetScale = .975f,
+                    ),
+                ) {
+                    // Kept alive through the exit animation so the content does not vanish early.
+                    val shown = playerSource ?: lastPlayerSource
+                    shown?.let { source ->
+                        val record = source.recordId?.let { id ->
+                            history.firstOrNull { it.id == id }
+                        } ?: history.firstOrNull { it.uri == source.uri }
+                            ?: history.firstOrNull { it.fileName == source.mediaFileName }
+                        var confirmPlayerDelete by remember(source.uri) { mutableStateOf(false) }
+                        Box(
+                            Modifier
+                                .fillMaxSize()
+                                .graphicsLayer {
+                                    val px = with(density) { playerBlur.dp.toPx() }
+                                    renderEffect =
+                                        if (px > .1f && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                            BlurEffect(px, px, TileMode.Clamp)
+                                        } else {
+                                            null
+                                        }
                                 }
-                                if (target != null) {
-                                    scope.launch {
-                                        container.mediaLibrary.delete(target)
-                                        container.mediaLibrary.refresh(
-                                            listOf(settings.effectiveDirectory),
-                                        )
+                                .momentumBackTransform(playerBackState),
+                        ) {
+                            PlayerScreen(
+                                source = source,
+                                favorite = record?.favorite == true,
+                                onToggleFavorite = {
+                                    record?.let {
+                                        container.historyStore.setFavorite(it.id, !it.favorite)
                                     }
-                                }
-                                playerSource = null
-                            },
-                            onDismiss = { confirmPlayerDelete = false },
-                        )
+                                },
+                                onOpenWith = { openUri(container, source.uri) },
+                                onInfo = {
+                                    toast(
+                                        context,
+                                        buildString {
+                                            append(source.title)
+                                            if (source.subtitle.isNotBlank()) {
+                                                append("\n${source.subtitle}")
+                                            }
+                                            append("\n${source.uri}")
+                                        },
+                                    )
+                                },
+                                onShare = { shareUri(container, source.uri, source.title) },
+                                onDelete = { confirmPlayerDelete = true },
+                                onBack = { playerSource = null },
+                            )
+                        }
+                        if (confirmPlayerDelete) {
+                            XThiefDialog(
+                                title = "删除视频",
+                                message = "「${source.title}」将从设备存储中永久删除。",
+                                confirmText = "删除",
+                                destructive = true,
+                                onConfirm = {
+                                    confirmPlayerDelete = false
+                                    val target = library.firstOrNull {
+                                        it.fileName == source.mediaFileName
+                                    }
+                                    if (target != null) {
+                                        scope.launch {
+                                            container.mediaLibrary.delete(target)
+                                            container.mediaLibrary.refresh(
+                                                listOf(settings.effectiveDirectory),
+                                            )
+                                        }
+                                    }
+                                    playerSource = null
+                                },
+                                onDismiss = { confirmPlayerDelete = false },
+                            )
+                        }
                     }
                 }
             }
@@ -449,6 +524,8 @@ fun XThiefScreen(
         }
     }
 }
+
+private const val PLAYER_EXIT_BLUR = 22f
 
 private const val LICENSE_TEXT = """Apache License
 Version 2.0, January 2004

@@ -348,8 +348,12 @@ fun CustomNavigation(
  * - after 20%: the floating bars accelerate downwards (quadratic), while the docked HyperOS bar
  *   stays put and only blurs and fades.
  */
+/**
+ * Shared blur + fade + slide-out for anything that should leave the screen the way the bottom
+ * navigation does. [progress] is 1 = fully visible, 0 = fully hidden.
+ */
 @Composable
-private fun Modifier.navHideAnimation(
+internal fun Modifier.navHideAnimation(
     progress: Float,
     maxBlur: Dp,
     style: NavigationStyle,
