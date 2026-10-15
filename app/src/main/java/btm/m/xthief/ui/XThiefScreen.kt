@@ -329,6 +329,26 @@ fun XThiefScreen(
                                         }
                                     }
                                 },
+                                onAssignFolders = { uris, chosen ->
+                                    uris.forEach { uri ->
+                                        library.firstOrNull { it.uri == uri }?.let { entry ->
+                                            container.folderStore.setFolders(entry.fileName, chosen)
+                                        }
+                                    }
+                                },
+                                onSetFavorite = { uris, favorite ->
+                                    uris.forEach { uri ->
+                                        library.firstOrNull { it.uri == uri }?.let { entry ->
+                                            history.firstOrNull { it.fileName == entry.fileName }
+                                                ?.let { record ->
+                                                    container.historyStore.setFavorite(
+                                                        record.id,
+                                                        favorite,
+                                                    )
+                                                }
+                                        }
+                                    }
+                                },
                             )
 
                             MainTab.SETTINGS -> SettingsPage(
@@ -512,10 +532,14 @@ fun XThiefScreen(
                                 favorite = record?.favorite == true,
                                 shortVideoMode = settings.shortVideoMode,
                                 folders = folders,
-                                onPickFolder = { folder ->
-                                    val entry = library.firstOrNull { it.uri == source.uri }
-                                    if (entry != null) {
-                                        container.folderStore.setFolder(entry.fileName, folder)
+                                currentFolders = library
+                                    .firstOrNull { it.uri == source.uri }
+                                    ?.fileName
+                                    ?.let { container.folderStore.foldersOf(it) }
+                                    .orEmpty(),
+                                onPickFolders = { chosen ->
+                                    library.firstOrNull { it.uri == source.uri }?.let { entry ->
+                                        container.folderStore.setFolders(entry.fileName, chosen)
                                     }
                                 },
                                 onSwitchVideo = { direction ->

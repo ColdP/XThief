@@ -127,7 +127,6 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 import btm.m.xthief.data.NavigationStyle
 import btm.m.xthief.ui.TopBarMaterial
 import btm.m.xthief.ui.components.BlurFadeContent
-import btm.m.xthief.ui.components.FavoriteToggle
 import btm.m.xthief.ui.components.FolderPickerSheet
 import btm.m.xthief.ui.components.GlassDialogButton
 import btm.m.xthief.ui.components.GlassFloatingToolbar
@@ -265,9 +264,10 @@ fun PlayerScreen(
     shortVideoMode: Boolean = false,
     /** -1 = previous clip, +1 = next clip. */
     onSwitchVideo: (Int) -> Unit = {},
-    /** Folders the favourite button can file this clip into. */
+    /** Folders the favourite button can file this clip into, and the ones it is already in. */
     folders: List<String> = emptyList(),
-    onPickFolder: (String?) -> Unit = {},
+    currentFolders: Set<String> = emptySet(),
+    onPickFolders: (Set<String>) -> Unit = {},
     onToggleFavorite: () -> Unit,
     onOpenWith: () -> Unit,
     onShare: () -> Unit,
@@ -474,14 +474,15 @@ fun PlayerScreen(
             onDismiss = { showInfo = false },
         )
 
-        // The favourite button opens this: starring plus every folder, in one sheet.
+        // The favourite button opens this: starring plus every folder, in one checkbox sheet.
         if (showFolderPicker) {
             FolderPickerSheet(
                 folders = folders,
-                title = "收藏与文件夹",
-                favoriteToggle = FavoriteToggle(favorite = favorite) { onToggleFavorite() },
-                onPick = { folder ->
-                    onPickFolder(folder)
+                initialFavorites = favorite,
+                initialFolders = currentFolders,
+                onConfirm = { starred, chosen ->
+                    if (starred != favorite) onToggleFavorite()
+                    onPickFolders(chosen)
                     showFolderPicker = false
                 },
                 onDismiss = { showFolderPicker = false },

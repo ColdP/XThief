@@ -72,9 +72,9 @@ fun XThiefDialog(
                     onClick = onConfirm,
                     modifier = Modifier.weight(1f),
                     colors = if (destructive) {
+                        // Default surface with red text, not a filled red button.
                         ButtonDefaults.buttonColors(
-                            color = MiuixTheme.colorScheme.error,
-                            contentColor = MiuixTheme.colorScheme.onError,
+                            contentColor = MiuixTheme.colorScheme.error,
                         )
                     } else {
                         ButtonDefaults.buttonColorsPrimary()

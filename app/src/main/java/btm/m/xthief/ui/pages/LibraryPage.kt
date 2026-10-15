@@ -142,6 +142,10 @@ fun LibraryPage(
     onDeleteFolder: (String) -> Unit = {},
     /** Moves the given files into a folder; null takes them out of every folder. */
     onAssignFolder: (Set<String>, String?) -> Unit = { _, _ -> },
+    /** Puts the given files in exactly this set of folders (checkbox sheet). */
+    onAssignFolders: (Set<String>, Set<String>) -> Unit = { _, _ -> },
+    /** Stars / unstars the given files. */
+    onSetFavorite: (Set<String>, Boolean) -> Unit = { _, _ -> },
 ) {
     // Multi-select state, mirroring HyperChanger's list pages.
     var selectionMode by remember { mutableStateOf(false) }
@@ -400,6 +404,8 @@ fun LibraryPage(
     )
 
     actionTarget?.let { entry ->
+        // Only inside 收藏 or a folder does "take out of folder" make sense.
+        val inFolderView = selectedTab == 1 || (selectedTab >= 2 && selectedTab < addTabIndex)
         MediaActionDialog(
             title = entry.displayName,
             subtitle = buildString {
@@ -408,6 +414,11 @@ fun LibraryPage(
                     append(" · ${minOf(entry.width, entry.height)}p")
                 }
                 if (entry.durationMs > 0) append(" · ${durationLabel(entry.durationMs)}")
+            },
+            inFolder = inFolderView,
+            onRemoveFromFolder = {
+                actionTarget = null
+                onAssignFolder(setOf(entry.uri), null)
             },
             onPlay = { actionTarget = null; onOpen(entry) },
             onShare = { actionTarget = null; onShare(entry) },
@@ -471,8 +482,15 @@ fun LibraryPage(
     if (movingSelection) {
         FolderPickerSheet(
             folders = folders,
-            onPick = { folder ->
-                onAssignFolder(selectedIds, folder)
+            initialFavorites = visibleEntries.filter { it.uri in selectedIds }.all { it.favorite },
+            // Union of what the selection already belongs to.
+            initialFolders = membership
+                .filterValues { files -> visibleEntries.any { it.uri in selectedIds && it.fileName in files } }
+                .keys,
+            onConfirm = { favorite, chosen ->
+                val targets = visibleEntries.filter { it.uri in selectedIds }
+                onAssignFolders(targets.map { it.uri }.toSet(), chosen)
+                onSetFavorite(targets.map { it.uri }.toSet(), favorite)
                 movingSelection = false
                 closeSelection()
             },
@@ -516,9 +534,9 @@ private fun FolderEditSheet(
                 GlassDialogButton(
                     onClick = onDelete,
                     modifier = Modifier.fillMaxWidth(),
+                    // Default surface with red text, not a filled red button.
                     colors = ButtonDefaults.buttonColors(
-                        color = MiuixTheme.colorScheme.error,
-                        contentColor = MiuixTheme.colorScheme.onError,
+                        contentColor = MiuixTheme.colorScheme.error,
                     ),
                 ) { Text("删除") }
             }

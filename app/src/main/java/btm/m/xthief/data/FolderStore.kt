@@ -55,13 +55,20 @@ class FolderStore(context: Context) {
     /** Files assigned to [folder]. */
     fun filesIn(folder: String): Set<String> = _membership.value[folder].orEmpty()
 
+    /** Folders [fileName] currently belongs to. */
+    fun foldersOf(fileName: String): Set<String> =
+        _membership.value.filterValues { fileName in it }.keys.toSet()
+
+    /** Replaces the whole set of folders [fileName] belongs to. */
+    fun setFolders(fileName: String, folders: Set<String>) {
+        val next = _membership.value.mapValues { it.value - fileName }.toMutableMap()
+        folders.forEach { folder -> next[folder] = next[folder].orEmpty() + fileName }
+        persistMembership(next.filterValues { it.isNotEmpty() })
+    }
+
     /** Moves [fileName] into [folder], or out of every folder when it is null. */
     fun setFolder(fileName: String, folder: String?) {
-        val next = _membership.value.mapValues { it.value - fileName }.toMutableMap()
-        if (folder != null) {
-            next[folder] = next[folder].orEmpty() + fileName
-        }
-        persistMembership(next.filterValues { it.isNotEmpty() })
+        setFolders(fileName, if (folder == null) emptySet() else setOf(folder))
     }
 
     /** Drops memberships whose files are gone from disk. */

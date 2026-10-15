@@ -48,6 +48,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import btm.m.xthief.XThiefApplication
@@ -74,6 +75,7 @@ import btm.m.xthief.x.DownloadTask
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Checkbox
+import top.yukonga.miuix.kmp.basic.CheckboxDefaults
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Text
@@ -696,33 +698,61 @@ private fun DownloadTaskRow(
 fun MediaActionDialog(
     title: String,
     subtitle: String,
+    inFolder: Boolean = false,
     onPlay: () -> Unit,
     onShare: () -> Unit,
+    onRemoveFromFolder: () -> Unit = {},
     onDelete: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     WindowDialog(
         show = true,
-        title = title,
-        summary = subtitle.ifBlank { null },
         onDismissRequest = onDismiss,
     ) {
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            // Drawn here rather than through WindowDialog's title/summary slots, which are centred.
+            Text(
+                text = title,
+                modifier = Modifier.fillMaxWidth(),
+                style = MiuixTheme.textStyles.title3,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Start,
+            )
+            if (subtitle.isNotBlank()) {
+                Text(
+                    text = subtitle,
+                    modifier = Modifier.fillMaxWidth(),
+                    style = MiuixTheme.textStyles.footnote2,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    textAlign = TextAlign.Start,
+                )
+            }
             GlassDialogButton(onClick = onPlay, modifier = Modifier.fillMaxWidth()) {
                 Text("播放")
             }
             GlassDialogButton(onClick = onShare, modifier = Modifier.fillMaxWidth()) {
                 Text("分享")
             }
-            GlassDialogButton(
-                onClick = onDelete,
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(
-                    color = MiuixTheme.colorScheme.error,
-                    contentColor = MiuixTheme.colorScheme.onError,
-                ),
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Text("删除")
+                if (inFolder) {
+                    GlassDialogButton(
+                        onClick = onRemoveFromFolder,
+                        modifier = Modifier.weight(1f),
+                    ) { Text("移出文件夹") }
+                }
+                GlassDialogButton(
+                    onClick = onDelete,
+                    modifier = Modifier.weight(1f),
+                    // Default surface with red text, not a filled red button.
+                    colors = ButtonDefaults.buttonColors(
+                        contentColor = MiuixTheme.colorScheme.error,
+                    ),
+                ) {
+                    Text("删除")
+                }
             }
             GlassDialogButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) {
                 Text("取消")
