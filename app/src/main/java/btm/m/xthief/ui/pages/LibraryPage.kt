@@ -19,6 +19,8 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -58,10 +60,12 @@ import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -71,24 +75,31 @@ import btm.m.xthief.data.MediaEntry
 import btm.m.xthief.data.ThumbnailCache
 import btm.m.xthief.ui.AppPage
 import btm.m.xthief.ui.components.EmptyState
+import btm.m.xthief.ui.components.GlassDialogButton
 import btm.m.xthief.ui.components.GlassFloatingToolbar
 import btm.m.xthief.ui.components.GlassFloatingToolbarRow
 import btm.m.xthief.ui.components.GlassToolbarIconButton
 import btm.m.xthief.ui.components.SensitiveBadge
 import btm.m.xthief.ui.components.TOOLBAR_MAX_BLUR
 import btm.m.xthief.ui.components.ToolbarAnimationTiming
+import btm.m.xthief.ui.components.WindowDialog
 import btm.m.xthief.ui.components.XThiefDialog
+import btm.m.xthief.ui.components.XThiefTextField
 import btm.m.xthief.ui.fileSizeLabel
 import btm.m.xthief.ui.timeLabel
+import kotlinx.coroutines.withTimeoutOrNull
+import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Checkbox
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
+import top.yukonga.miuix.kmp.basic.TabRow
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.ToolbarPosition
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Close
 import top.yukonga.miuix.kmp.icon.extended.Delete
+import top.yukonga.miuix.kmp.icon.extended.Folder
 import top.yukonga.miuix.kmp.icon.extended.GridView
 import top.yukonga.miuix.kmp.icon.extended.ListView
 import top.yukonga.miuix.kmp.icon.extended.Photos
@@ -120,6 +131,15 @@ fun LibraryPage(
     blurSensitiveCovers: Boolean = true,
     /** Supplies the cover frames; null leaves the cards without artwork. */
     thumbnails: ThumbnailCache? = null,
+    /** User-created folders, shown as tabs after 全部 and 收藏. */
+    folders: List<String> = emptyList(),
+    /** folder -> member file names. */
+    membership: Map<String, Set<String>> = emptyMap(),
+    onAddFolder: (String) -> Unit = {},
+    onRenameFolder: (String, String) -> Unit = { _, _ -> },
+    onDeleteFolder: (String) -> Unit = {},
+    /** Moves the given files into a folder; null takes them out of every folder. */
+    onAssignFolder: (Set<String>, String?) -> Unit = { _, _ -> },
 ) {
     // Multi-select state, mirroring HyperChanger's list pages.
     var selectionMode by remember { mutableStateOf(false) }
@@ -127,6 +147,29 @@ fun LibraryPage(
     var confirmBatchDelete by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<MediaEntry?>(null) }
     var actionTarget by remember { mutableStateOf<MediaEntry?>(null) }
+
+    // Folder tabs: 0 = 全部, 1 = 收藏, then one per folder, then the trailing 添加 action.
+    val tabs = remember(folders) {
+        buildList { add("全部"); add("收藏"); addAll(folders); add("添加") }
+    }
+    val addTabIndex = tabs.lastIndex
+    var selectedTab by remember { mutableIntStateOf(0) }
+    var editingFolder by remember { mutableStateOf<FolderEditTarget?>(null) }
+    var movingSelection by remember { mutableStateOf(false) }
+
+    // Fall back to 全部 if the selected folder disappeared.
+    LaunchedEffect(tabs.size) { if (selectedTab > addTabIndex) selectedTab = 0 }
+
+    val visibleEntries = remember(entries, selectedTab, folders, membership) {
+        when {
+            selectedTab == 0 || selectedTab == addTabIndex -> entries
+            selectedTab == 1 -> entries.filter { it.favorite }
+            else -> {
+                val members = membership[folders.getOrNull(selectedTab - 2)].orEmpty()
+                entries.filter { it.fileName in members }
+            }
+        }
+    }
 
     fun closeSelection() {
         selectionMode = false
@@ -158,6 +201,49 @@ fun LibraryPage(
 
     AppPage(
         title = "媒体库",
+        // Folder tabs sit right under the title bar and stay there while the grid scrolls.
+        topContent = {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp)
+                    // Long-press is handled out here because TabRow only reports taps.
+                    // requireUnconsumed = false keeps the tabs' own clicks working.
+                    .pointerInput(folders) {
+                        awaitPointerEventScope {
+                            while (true) {
+                                awaitFirstDown(requireUnconsumed = false)
+                                val released = withTimeoutOrNull(
+                                    viewConfiguration.longPressTimeoutMillis,
+                                ) {
+                                    waitForUpOrCancellation()
+                                }
+                                if (released == null) {
+                                    val index = selectedTab
+                                    if (index >= 2 && index < addTabIndex) {
+                                        editingFolder = FolderEditTarget(folders[index - 2])
+                                    }
+                                    waitForUpOrCancellation()
+                                }
+                            }
+                        }
+                    },
+            ) {
+                TabRow(
+                    tabs = tabs,
+                    selectedTabIndex = selectedTab,
+                    onTabSelected = { index ->
+                        if (index == addTabIndex) {
+                            // 添加 is an action, not a filter: it opens the create sheet.
+                            editingFolder = FolderEditTarget(null)
+                        } else {
+                            selectedTab = index
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
         floatingToolbarPosition = ToolbarPosition.BottomCenter,
         floatingToolbar = {
             AnimatedVisibility(
@@ -193,15 +279,25 @@ fun LibraryPage(
                     GlassFloatingToolbar {
                         GlassFloatingToolbarRow {
                             IconButton(onClick = {
-                                selectedIds = if (selectedIds.size == entries.size) {
+                                selectedIds = if (selectedIds.size == visibleEntries.size) {
                                     emptySet()
                                 } else {
-                                    entries.mapTo(linkedSetOf()) { it.uri }
+                                    visibleEntries.mapTo(linkedSetOf()) { it.uri }
                                 }
                             }) {
                                 Icon(
                                     MiuixIcons.Regular.SelectAll,
                                     "全选",
+                                    Modifier.size(26.4.dp),
+                                )
+                            }
+                            IconButton(
+                                enabled = selectedIds.isNotEmpty(),
+                                onClick = { movingSelection = true },
+                            ) {
+                                Icon(
+                                    MiuixIcons.Regular.Folder,
+                                    "移动到文件夹",
                                     Modifier.size(26.4.dp),
                                 )
                             }
@@ -258,12 +354,12 @@ fun LibraryPage(
         },
         content = {
             if (viewMode != LIBRARY_VIEW_GRID) {
-                if (entries.isEmpty()) {
+                if (visibleEntries.isEmpty()) {
                     item {
                         EmptyLibraryState(directory, MiuixIcons.Regular.Photos)
                     }
                 } else {
-                    items(entries, key = { it.uri }) { entry ->
+                    items(visibleEntries, key = { it.uri }) { entry ->
                         MediaCard(
                             entry = entry,
                             selectionMode = selectionMode,
@@ -289,12 +385,12 @@ fun LibraryPage(
         },
         staggeredContent = if (viewMode == LIBRARY_VIEW_GRID) {
             {
-                if (entries.isEmpty()) {
+                if (visibleEntries.isEmpty()) {
                     item {
                         EmptyLibraryState(directory, MiuixIcons.Regular.Photos)
                     }
                 } else {
-                    staggeredItems(entries, key = { it.uri }) { entry ->
+                    staggeredItems(visibleEntries, key = { it.uri }) { entry ->
                         MediaCoverCard(
                             entry = entry,
                             selectionMode = selectionMode,
@@ -370,6 +466,136 @@ fun LibraryPage(
             },
             onDismiss = { confirmBatchDelete = false },
         )
+    }
+
+    editingFolder?.let { target ->
+        FolderEditSheet(
+            target = target,
+            onSave = { name ->
+                if (target.original == null) {
+                    onAddFolder(name)
+                } else {
+                    onRenameFolder(target.original, name)
+                }
+                editingFolder = null
+            },
+            onDelete = {
+                target.original?.let(onDeleteFolder)
+                editingFolder = null
+            },
+            onDismiss = { editingFolder = null },
+        )
+    }
+
+    if (movingSelection) {
+        FolderPickerSheet(
+            folders = folders,
+            onPick = { folder ->
+                onAssignFolder(selectedIds, folder)
+                movingSelection = false
+                closeSelection()
+            },
+            onDismiss = { movingSelection = false },
+        )
+    }
+}
+
+/** Which folder the edit sheet acts on; a null [original] means it is being created. */
+private data class FolderEditTarget(val original: String?)
+
+/**
+ * Create / rename / delete a folder: left-aligned heading, one field, then full-width actions.
+ */
+@Composable
+private fun FolderEditSheet(
+    target: FolderEditTarget,
+    onSave: (String) -> Unit,
+    onDelete: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var name by remember(target) { mutableStateOf(target.original.orEmpty()) }
+    val isNew = target.original == null
+
+    WindowDialog(show = true, onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                text = if (isNew) "新建文件夹" else "编辑文件夹",
+                modifier = Modifier.fillMaxWidth(),
+                style = MiuixTheme.textStyles.title3,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Start,
+            )
+            XThiefTextField(
+                value = name,
+                onValueChange = { name = it },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = "文件夹名称",
+            )
+            if (!isNew) {
+                GlassDialogButton(
+                    onClick = onDelete,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        color = MiuixTheme.colorScheme.error,
+                        contentColor = MiuixTheme.colorScheme.onError,
+                    ),
+                ) { Text("删除") }
+            }
+            GlassDialogButton(
+                onClick = { onSave(name) },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(
+                    color = Color(0xFF0088FF),
+                    contentColor = Color.White,
+                ),
+            ) { Text("保存") }
+            GlassDialogButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) {
+                Text("取消")
+            }
+        }
+    }
+}
+
+/** Picks the destination folder for the current selection. */
+@Composable
+private fun FolderPickerSheet(
+    folders: List<String>,
+    onPick: (String?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    WindowDialog(show = true, onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                text = "移动到",
+                modifier = Modifier.fillMaxWidth(),
+                style = MiuixTheme.textStyles.title3,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Start,
+            )
+            if (folders.isEmpty()) {
+                Text(
+                    text = "还没有文件夹，先在媒体库的「添加」里建一个。",
+                    modifier = Modifier.fillMaxWidth(),
+                    style = MiuixTheme.textStyles.body2,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    textAlign = TextAlign.Start,
+                )
+            } else {
+                folders.forEach { folder ->
+                    GlassDialogButton(
+                        onClick = { onPick(folder) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text(folder) }
+                }
+                GlassDialogButton(
+                    onClick = { onPick(null) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("移出文件夹") }
+            }
+            GlassDialogButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) {
+                Text("取消")
+            }
+        }
     }
 }
 

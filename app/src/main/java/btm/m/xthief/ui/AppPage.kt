@@ -9,6 +9,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
@@ -83,6 +84,11 @@ fun AppPage(
      * Declared *before* [content] so the trailing-lambda call form keeps binding to `content`.
      */
     staggeredContent: (LazyStaggeredGridScope.() -> Unit)? = null,
+    /**
+     * Rendered directly beneath the top bar and above the scrolling body, so it stays put while
+     * the content moves (used for the media library's folder tabs).
+     */
+    topContent: (@Composable () -> Unit)? = null,
     content: LazyListScope.() -> Unit,
 ) {
     val scroll = MiuixScrollBehavior()
@@ -197,34 +203,49 @@ fun AppPage(
             },
         ) { padding ->
             Box(Modifier.fillMaxSize().layerBackdrop(backdrop)) {
+                // The top content is inset past the bar but outside the scrolling area, so it stays
+                // pinned while the body moves underneath.
                 val contentPadding = PaddingValues(
                     start = 16.dp,
                     end = 16.dp,
-                    top = padding.calculateTopPadding() + 4.dp,
+                    top = if (topContent != null) 4.dp else padding.calculateTopPadding() + 4.dp,
                     bottom = padding.calculateBottomPadding() + contentBottomPadding.dp,
                 )
-                if (staggeredContent != null) {
-                    LazyVerticalStaggeredGrid(
-                        columns = StaggeredGridCells.Fixed(2),
-                        state = staggeredState,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .nestedScroll(scroll.nestedScrollConnection),
-                        contentPadding = contentPadding,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalItemSpacing = 12.dp,
-                        content = staggeredContent,
-                    )
-                } else {
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .nestedScroll(scroll.nestedScrollConnection),
-                        contentPadding = contentPadding,
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                        content = content,
-                    )
+                Column(Modifier.fillMaxSize()) {
+                    if (topContent != null) {
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(top = padding.calculateTopPadding()),
+                        ) {
+                            topContent()
+                        }
+                    }
+                    if (staggeredContent != null) {
+                        LazyVerticalStaggeredGrid(
+                            columns = StaggeredGridCells.Fixed(2),
+                            state = staggeredState,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                                .nestedScroll(scroll.nestedScrollConnection),
+                            contentPadding = contentPadding,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalItemSpacing = 12.dp,
+                            content = staggeredContent,
+                        )
+                    } else {
+                        LazyColumn(
+                            state = listState,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                                .nestedScroll(scroll.nestedScrollConnection),
+                            contentPadding = contentPadding,
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                            content = content,
+                        )
+                    }
                 }
             }
         }

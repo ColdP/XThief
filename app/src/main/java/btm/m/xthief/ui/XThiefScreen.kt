@@ -84,6 +84,8 @@ fun XThiefScreen(
     val settings by settingsStore.state.collectAsState()
     val history by container.historyStore.records.collectAsState()
     val library by container.mediaLibrary.entries.collectAsState()
+    val folders by container.folderStore.folders.collectAsState()
+    val folderMembership by container.folderStore.membership.collectAsState()
     val tasks by container.downloadManager.tasks.collectAsStateWithLifecycle()
     // True while the media library is in multi-select: the bottom navigation slides away so the
     // floating selection toolbar has the area to itself.
@@ -312,6 +314,21 @@ fun XThiefScreen(
                                 },
                                 blurSensitiveCovers = settings.blurSensitiveCovers,
                                 thumbnails = container.thumbnailCache,
+                                folders = folders,
+                                membership = folderMembership,
+                                onAddFolder = { container.folderStore.add(it) },
+                                onRenameFolder = { old, new ->
+                                    container.folderStore.rename(old, new)
+                                },
+                                onDeleteFolder = { container.folderStore.remove(it) },
+                                onAssignFolder = { uris, folder ->
+                                    // The page passes entry URIs; the store keys on file names.
+                                    uris.forEach { uri ->
+                                        library.firstOrNull { it.uri == uri }?.let { entry ->
+                                            container.folderStore.setFolder(entry.fileName, folder)
+                                        }
+                                    }
+                                },
                             )
 
                             MainTab.SETTINGS -> SettingsPage(

@@ -4,6 +4,7 @@ package btm.m.xthief
 
 import android.app.Application
 import btm.m.xthief.data.HistoryStore
+import btm.m.xthief.data.FolderStore
 import btm.m.xthief.data.MediaLibrary
 import btm.m.xthief.data.ThumbnailCache
 import btm.m.xthief.data.XThiefSettingsStore
@@ -16,6 +17,7 @@ class XThiefApplication : Application() {
     val settingsStore: XThiefSettingsStore by lazy { XThiefSettingsStore(this) }
     val historyStore: HistoryStore by lazy { HistoryStore(this) }
     val mediaLibrary: MediaLibrary by lazy { MediaLibrary(this, historyStore) }
+    val folderStore: FolderStore by lazy { FolderStore(this) }
     val thumbnailCache: ThumbnailCache by lazy { ThumbnailCache(this) }
     val extractor: XVideoExtractor by lazy { XVideoExtractor(settingsStore) }
     val downloadManager: XDownloadManager by lazy { XDownloadManager(this, settingsStore) }
