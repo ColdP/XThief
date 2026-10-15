@@ -14,6 +14,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
@@ -32,6 +33,13 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 @Composable
 fun GlassFloatingToolbar(
     modifier: Modifier = Modifier,
+    /**
+     * Overrides the surface tint. The default leans on the theme surface at 80% alpha, which reads
+     * as a flat block over video; the player passes a much lighter scrim so the backdrop shows.
+     */
+    surfaceTint: Color? = null,
+    /** Capsule by default; the player switches to a rounded rectangle while scrubbing. */
+    cornerRadius: Dp = 50.dp,
     content: @Composable () -> Unit,
 ) {
     // Scaffold's floatingToolbar slot sits outside the topBar's LocalToolbarBackdrop provider,
@@ -53,9 +61,10 @@ fun GlassFloatingToolbar(
     }
     val surface = MiuixTheme.colorScheme.surfaceContainer
     val isLightTheme = surface.luminance() > .5f
-    val tint = (if (isLightTheme) Color(0xFFF8F8F8) else surface).copy(alpha = .80f)
+    val tint = surfaceTint
+        ?: (if (isLightTheme) Color(0xFFF8F8F8) else surface).copy(alpha = .80f)
     val shadowColor = if (isLightTheme) Color.Gray else Color.Black
-    val shape = RoundedCornerShape(50.dp)
+    val shape = RoundedCornerShape(cornerRadius)
     val glassModifier = if (backdrop != null) {
         Modifier.drawBackdrop(
             backdrop = backdrop,
@@ -85,7 +94,7 @@ fun GlassFloatingToolbar(
             .then(touchHighlight.gestureModifier)
             .then(touchHighlight.modifier),
         color = Color.Transparent,
-        cornerRadius = 50.dp,
+        cornerRadius = cornerRadius,
         shadowElevation = 0.dp,
         showDivider = false,
         content = content,
