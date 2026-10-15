@@ -103,12 +103,13 @@ class BilibiliExtractor(private val settingsStore: XThiefSettingsStore) {
                 ?: track.optString("base_url").takeIf { it.isNotBlank() }
                 ?: return@mapNotNull null
             VideoVariant(
-                url = url,
+                // Some CDN hosts come back as plain http, which Android blocks by default.
+                url = url.replaceFirst("http://", "https://"),
                 bitrate = (track.optLong("bandwidth", 0L) / 1000L).toInt(),
                 contentType = "video/mp4",
                 width = track.optInt("width"),
                 height = track.optInt("height"),
-                audioUrl = audioUrl,
+                audioUrl = audioUrl?.replaceFirst("http://", "https://"),
                 // Bilibili's media hosts reject requests without a matching Referer.
                 referer = REFERER,
             )
@@ -162,7 +163,8 @@ class BilibiliExtractor(private val settingsStore: XThiefSettingsStore) {
         /** DASH output (`fnval` bits 4 + 16 + 64 + 128 + 256 + 512 + 1024 + 2048). */
         const val FNVAL_DASH = 4048
 
-        const val REFERER = "https://www.bilibili.com"
+        /** Trailing slash included: this is the exact header value yt-dlp sends. */
+        const val REFERER = "https://www.bilibili.com/"
         const val USER_AGENT =
             "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 (KHTML, like Gecko) " +
                 "Chrome/133.0.0.0 Mobile Safari/537.36"

@@ -483,7 +483,12 @@ class XDownloadManager(
         }
     }
 
-    /** Streams a plain media URL into [file], sending the headers some CDNs insist on. */
+    /**
+     * Streams a plain media URL into [file], sending the headers some CDNs insist on.
+     *
+     * Only `Referer` is set for protected hosts, matching what yt-dlp sends to Bilibili: adding
+     * `Range` or `Origin` on top makes its upos CDNs answer 403.
+     */
     private suspend fun fetchFileInto(
         url: String,
         file: File,
