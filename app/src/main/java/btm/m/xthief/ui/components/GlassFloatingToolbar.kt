@@ -2,19 +2,25 @@
 // Copyright 2026 btm_m
 package btm.m.xthief.ui.components
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.kyant.backdrop.drawBackdrop
@@ -49,6 +55,12 @@ fun GlassFloatingToolbar(
      * this down with the same progress.
      */
     highlightAlpha: Float = .70f,
+    /**
+     * Stand-in picture for the blur, used when the backdrop cannot see the content behind this bar.
+     * A SurfaceView (needed for HDR) lives in its own compositor layer, so a caller playing one
+     * feeds in a [PixelCopy] frame here instead.
+     */
+    snapshot: ImageBitmap? = null,
     content: @Composable () -> Unit,
 ) {
     // Scaffold's floatingToolbar slot sits outside the topBar's LocalToolbarBackdrop provider,
@@ -111,9 +123,32 @@ fun GlassFloatingToolbar(
         cornerRadius = cornerRadius,
         shadowElevation = 0.dp,
         showDivider = false,
-        content = content,
+        content = {
+            if (snapshot == null) {
+                content()
+            } else {
+                // The captured frame stands in for the backdrop: blurred to the same degree, then
+                // tinted, so an HDR bar still reads as glass over the picture.
+                Box(contentAlignment = Alignment.Center) {
+                    Image(
+                        bitmap = snapshot,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .matchParentSize()
+                            .blur(SNAPSHOT_BLUR)
+                            .then(Modifier.clip(shape)),
+                    )
+                    Box(Modifier.matchParentSize().background(tint))
+                    content()
+                }
+            }
+        },
     )
 }
+
+/** Blur applied to a captured frame standing in for the backdrop. */
+private val SNAPSHOT_BLUR = 24.dp
 
 /** Row wrapper matching HyperChanger's toolbar button spacing. */
 @Composable

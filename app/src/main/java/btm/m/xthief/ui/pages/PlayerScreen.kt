@@ -15,7 +15,10 @@ import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaPlayer
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
+import android.view.PixelCopy
 import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -71,7 +74,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -103,6 +108,8 @@ import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.HorizontalDivider
 import top.yukonga.miuix.kmp.basic.Icon
@@ -191,6 +198,15 @@ private const val SWIPE_ANIM_MS = 240
 
 /** How close the player must get to a requested position before polling resumes from it. */
 private const val SEEK_SETTLE_MS = 1_200L
+
+/** How much the captured frame is downscaled before it is used as a blur source. */
+private const val SNAPSHOT_DIVISOR = 4
+
+/** How often a fresh frame is captured; it only feeds a blur, so this can be slow. */
+private const val SNAPSHOT_INTERVAL_MS = 400L
+
+/** Upper bound on waiting for a PixelCopy, so a stalled copy cannot wedge the sampler. */
+private const val SNAPSHOT_TIMEOUT_MS = 400L
 
 /** The app's brand accent, used for the primary action in the info sheet. */
 private val BrandBlue = Color(0xFF0088FF)
@@ -295,6 +311,9 @@ fun PlayerScreen(
     var isHdr by remember(source.uri) { mutableStateOf(false) }
     // Only take the SurfaceView path when the user has left HDR playback enabled.
     val useSurfaceView = isHdr && hdrEnabled
+    var surfaceViewRef by remember { mutableStateOf<SurfaceView?>(null) }
+    /** Frame captured from the SurfaceView, standing in for the un-samplable backdrop. */
+    var snapshot by remember(source.uri) { mutableStateOf<ImageBitmap?>(null) }
     /** Fills the incoming frame's shape until the clip reports its real size. */
     val videoAspectModifier = if (videoWidth > 0 && videoHeight > 0) {
         Modifier.aspectRatio(videoWidth.toFloat() / videoHeight)
@@ -431,6 +450,23 @@ fun PlayerScreen(
         }
     }
 
+    // Keep a recent frame of the HDR picture available for the glass bars. Sampled slowly on
+    // purpose: it only feeds a blur, so a few frames a second is indistinguishable.
+    LaunchedEffect(useSurfaceView, isPlaying, source.uri) {
+        if (!useSurfaceView) {
+            snapshot = null
+            return@LaunchedEffect
+        }
+        while (true) {
+            val view = surfaceViewRef
+            if (isPlaying && view != null && view.width > 0 && view.height > 0) {
+                val frame = withContext(Dispatchers.IO) { captureSurface(view) }
+                if (frame != null) snapshot = frame.asImageBitmap()
+            }
+            delay(SNAPSHOT_INTERVAL_MS)
+        }
+    }
+
     // Playback clock. Runs unconditionally so the play/pause button always mirrors the player,
     // including while paused. While a seek is settling the reported position is ignored, otherwise
     // the bar snaps back to the old spot before seekTo lands.
@@ -500,6 +536,7 @@ fun PlayerScreen(
                         AndroidView(
                             factory = { ctx ->
                                 SurfaceView(ctx).apply {
+                                    surfaceViewRef = this
                                     holder.addCallback(object : SurfaceHolder.Callback {
                                         override fun surfaceCreated(holder: SurfaceHolder) {
                                             drawSurface = holder.surface
@@ -721,6 +758,7 @@ fun PlayerScreen(
                             surfaceTint = glassTint,
                             shadowTint = Color.Black,
                             highlightAlpha = 0f,
+                            snapshot = snapshot,
                         ) {
                             Row(
                                 Modifier.fillMaxWidth().padding(start = 0.dp, end = 4.dp),
@@ -809,6 +847,7 @@ fun PlayerScreen(
                     highlightAlpha = 0f,
                     surfaceTint = glassTint,
                     contentColor = barInk,
+                    snapshot = snapshot,
                     onTogglePlay = { togglePlayback(player) { isPlaying = it } },
                     onToggleMute = {
                         val next = !isMuted
@@ -838,6 +877,7 @@ fun PlayerScreen(
                     highlightAlpha = 0f,
                     surfaceTint = glassTint,
                     contentColor = barInk,
+                    snapshot = snapshot,
                     onToggleFavorite = onToggleFavorite,
                     onOpenWith = onOpenWith,
                     onInfo = { showInfo = true },
@@ -892,6 +932,7 @@ private fun PlayerTransportCard(
     highlightAlpha: Float,
     surfaceTint: Color,
     contentColor: Color,
+    snapshot: ImageBitmap?,
     onTogglePlay: () -> Unit,
     onToggleMute: () -> Unit,
     onScrubStart: () -> Unit,
@@ -917,6 +958,7 @@ private fun PlayerTransportCard(
         cornerRadius = cardRadius,
         shadowTint = Color.Black,
         highlightAlpha = highlightAlpha,
+        snapshot = snapshot,
     ) {
         Column(
             Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 6.dp),
@@ -1015,6 +1057,7 @@ private fun PlayerActionToolbar(
     highlightAlpha: Float,
     surfaceTint: Color,
     contentColor: Color,
+    snapshot: ImageBitmap?,
     onToggleFavorite: () -> Unit,
     onOpenWith: () -> Unit,
     onInfo: () -> Unit,
@@ -1026,6 +1069,7 @@ private fun PlayerActionToolbar(
         surfaceTint = surfaceTint,
         shadowTint = Color.Black,
         highlightAlpha = highlightAlpha,
+        snapshot = snapshot,
     ) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 2.dp),
@@ -1165,6 +1209,32 @@ private fun isHdrVideo(context: Context, uri: Uri): Boolean = runCatching {
         runCatching { extractor.release() }
     }
 }.getOrDefault(false)
+
+/**
+ * Grabs the current frame out of a SurfaceView.
+ *
+ * A SurfaceView is composited in its own layer, so `layerBackdrop` cannot see it; PixelCopy reads
+ * the layer directly and gives the glass bars something to blur.
+ */
+private fun captureSurface(view: SurfaceView): Bitmap? = runCatching {
+    val width = (view.width / SNAPSHOT_DIVISOR).coerceAtLeast(1)
+    val height = (view.height / SNAPSHOT_DIVISOR).coerceAtLeast(1)
+    val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+    val latch = CountDownLatch(1)
+    var copied = false
+    PixelCopy.request(
+        view,
+        bitmap,
+        { result ->
+            copied = result == PixelCopy.SUCCESS
+            latch.countDown()
+        },
+        Handler(Looper.getMainLooper()),
+    )
+    // Never block the sampler for long: a missed frame just keeps the previous snapshot.
+    latch.await(SNAPSHOT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+    if (copied) bitmap else null.also { bitmap.recycle() }
+}.getOrNull()
 
 /** Everything the info panel shows about the file behind a clip. */
 private data class MediaFileInfo(
