@@ -1,0 +1,394 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 btm_m
+package btm.m.xthief.x
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Context
+import android.content.Intent
+import android.graphics.BitmapFactory
+import android.graphics.drawable.Icon
+import android.os.Build
+import android.os.Bundle
+import btm.m.xthief.MainActivity
+import btm.m.xthief.R
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import org.json.JSONObject
+
+/**
+ * Publishes download progress to Xiaomi's Super Island (超级岛).
+ *
+ * Integration follows the native-notification route: the island payload is a **JSON string** under
+ * the `miui.focus.param` extra, and pictures it references by key travel as `Icon` values inside
+ * the `miui.focus.pics` bundle. Two ROM gates apply: `notification_focus_protocol` must be >= 3,
+ * and `business` must be a scenario HyperOS accepts for island display.
+ *
+ * Progress components live at **different levels** and must not be mixed — putting a banner-level
+ * component inside the island (or the reverse) renders nothing:
+ *
+ * - banner / focus card: `param_v2.progressInfo` (LinearProgress style bar);
+ * - small island (摘要态, 模版2 图标组合组件): `smallIslandArea.combinePicInfo`, i.e. the icon wrapped
+ *   by a `progressInfo` ring;
+ * - big island (展开态, 模版7 IM图文组件 + 识别图形组件1 + 进度组件2):
+ *   `bigIslandArea.progressTextInfo`, a text block with a circular progress arc.
+ *
+ * @see <a href="https://dev.mi.com/xiaomihyperos/documentation/detail?pId=2131">开发指南</a>
+ * @see <a href="https://dev.mi.com/xiaomihyperos/documentation/detail?pId=2142">展开态设计规范</a>
+ */
+class IslandNotifier(private val context: Context) {
+
+    private val manager: NotificationManager? =
+        context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+
+    private val scope = CoroutineScope(Dispatchers.Main + Job())
+    private var simulation: Job? = null
+
+    /** True when the ROM advertises island support (`persist.sys.feature.island`). */
+    val isSupported: Boolean
+        get() = runCatching {
+            val clazz = Class.forName("android.os.SystemProperties")
+            val method = clazz.getDeclaredMethod(
+                "getBoolean",
+                String::class.java,
+                Boolean::class.javaPrimitiveType,
+            )
+            method.invoke(null, "persist.sys.feature.island", false) as? Boolean ?: false
+        }.getOrDefault(false)
+
+    /**
+     * Focus-notification protocol reported by the ROM: 1 = OS1, 2 = OS2, 3 = OS3. Super Island
+     * requires at least 3.
+     */
+    val protocolVersion: Int
+        get() = runCatching {
+            android.provider.Settings.System.getInt(
+                context.contentResolver,
+                "notification_focus_protocol",
+                0,
+            )
+        }.getOrDefault(0)
+
+    fun updateProgress(task: DownloadTask) {
+        if (manager == null) return
+        ensureChannel()
+        postProgress(
+            id = task.id.hashCode(),
+            title = task.title.ifBlank { "XThief" },
+            description = task.subtitle.ifBlank { task.fileName },
+            percent = (task.progress * 100).toInt().coerceIn(0, 100),
+        )
+    }
+
+    fun notifyResult(task: DownloadTask, success: Boolean) {
+        if (manager == null) return
+        ensureChannel()
+        post(
+            id = task.id.hashCode(),
+            notification = buildNotification(
+                title = task.title.ifBlank { "XThief" },
+                text = if (success) "下载完成" else (task.error ?: "下载失败"),
+                percent = null,
+                ongoing = false,
+            ).apply {
+                buildIslandParam(
+                    title = task.title.ifBlank { "XThief" },
+                    description = if (success) "下载完成" else (task.error ?: "下载失败"),
+                    ticker = task.title.ifBlank { "XThief" },
+                    percent = null,
+                )?.let { extras.putString(EXTRAS_PARAM, it) }
+            }.build(),
+        )
+    }
+
+    fun cancel(id: String) {
+        runCatching { manager?.cancel(id.hashCode()) }
+    }
+
+    /** Fires a simulated island; [durationMillis] controls how long the progress takes. */
+    fun simulate(durationMillis: Long = DEFAULT_SIMULATION_MS) {
+        if (manager == null) return
+        ensureChannel()
+        simulation?.cancel()
+        val id = SIMULATION_ID.hashCode()
+        val steps = 100
+        val interval = (durationMillis / steps).coerceAtLeast(30L)
+        simulation = scope.launch {
+            for (step in 0..steps step 2) {
+                postProgress(
+                    id = id,
+                    title = "小米超级岛模拟",
+                    description = "正在验证超级岛显示",
+                    percent = step,
+                )
+                delay(interval * 2)
+            }
+            delay(400)
+            post(
+                id = id,
+                notification = buildNotification(
+                    title = "小米超级岛模拟",
+                    text = "模拟下载完成",
+                    percent = null,
+                    ongoing = false,
+                ).apply {
+                    buildIslandParam(
+                        title = "小米超级岛模拟",
+                        description = "模拟下载完成",
+                        ticker = "小米超级岛模拟",
+                        percent = null,
+                    )?.let { extras.putString(EXTRAS_PARAM, it) }
+                }.build(),
+            )
+        }
+    }
+
+    private fun postProgress(id: Int, title: String, description: String, percent: Int) {
+        post(
+            id = id,
+            notification = buildNotification(
+                title = title,
+                text = "$description · $percent%",
+                percent = percent,
+                ongoing = true,
+            ).apply {
+                buildIslandParam(
+                    title = title,
+                    description = description,
+                    ticker = "$title · $percent%",
+                    percent = percent,
+                )?.let { extras.putString(EXTRAS_PARAM, it) }
+            }.build(),
+        )
+    }
+
+    /**
+     * Builds the `miui.focus.param` JSON. Progress is emitted on the three levels that actually
+     * render: the banner bar on `param_v2`, the icon ring on `smallIslandArea`, and the progress
+     * text block on `bigIslandArea`.
+     *
+     * Returns null when the payload would exceed the 3 KB limit SystemUI enforces.
+     */
+    private fun buildIslandParam(
+        title: String,
+        description: String,
+        ticker: String,
+        percent: Int?,
+    ): String? {
+        val iconKey = PIC_IMAGE_TEXT
+        val picInfo = JSONObject().put("type", 1).put("pic", iconKey)
+
+        // 小岛（摘要态）模版2 · 图标组合组件：图标 + 圆形进度环
+        val smallIsland = JSONObject().apply {
+            if (percent != null) {
+                put(
+                    "combinePicInfo",
+                    JSONObject()
+                        .put("picInfo", picInfo)
+                        .put("progressInfo", circularProgress(percent)),
+                )
+            } else {
+                put("picInfo", picInfo)
+            }
+        }
+
+        // 大岛（展开态）模版7：IM图文组件 + 识别图形组件1 + 进度组件2
+        val bigIsland = JSONObject()
+            .put(
+                "imageTextInfoLeft",
+                JSONObject()
+                    .put("type", 1)
+                    .put("picInfo", picInfo)
+                    .put(
+                        "textInfo",
+                        JSONObject()
+                            .put("title", title)
+                            .put("showHighlightColor", false),
+                    ),
+            )
+            .put("imageTextInfoRight", JSONObject().put("type", 2).put("picInfo", picInfo))
+        if (percent != null) {
+            bigIsland.put(
+                "progressTextInfo",
+                JSONObject()
+                    .put("title", "$percent%")
+                    .put("content", description)
+                    .put("progressInfo", circularProgress(percent))
+                    .put("showHighlightColor", false),
+            )
+        } else {
+            bigIsland.put(
+                "textInfo",
+                JSONObject()
+                    .put("title", title)
+                    .put("content", description)
+                    .put("showHighlightColor", false),
+            )
+        }
+
+        val paramIsland = JSONObject()
+            .put("islandProperty", 1)
+            .put("islandTimeout", 43_200)
+            .put("bigIslandArea", bigIsland)
+            .put("smallIslandArea", smallIsland)
+
+        val paramV2 = JSONObject()
+            .put("protocol", 1)
+            .put("business", BUSINESS)
+            .put("islandFirstFloat", false)
+            .put("enableFloat", percent != null)
+            .put("updatable", true)
+            .put("timeout", 720)
+            .put("ticker", ticker)
+            .put("tickerPic", iconKey)
+            .put("aodTitle", title)
+            .put("aodPic", iconKey)
+            .put("filterWhenNoPermission", false)
+            .put(
+                "baseInfo",
+                JSONObject()
+                    .put("type", 2)
+                    .put("title", title)
+                    .put("content", description)
+                    .put("colorTitle", "#FFFFFF")
+                    .put("colorTitleDark", "#FFFFFF")
+                    .put("colorContent", "#A8A8A8")
+                    .put("colorContentDark", "#A8A8A8")
+                    .put("colorSubTitle", "#3482FF")
+                    .put("colorSubTitleDark", "#5C91FF"),
+            )
+            .put("picInfo", JSONObject().put("type", 3).put("pic", iconKey).put("picDark", iconKey))
+            .put("param_island", paramIsland)
+        // 通知横幅进度条（LinearProgress 级），与岛内进度互相独立。
+        if (percent != null) {
+            paramV2.put("progressInfo", linearProgress(percent))
+        }
+
+        val json = JSONObject().put(PARAM_V2, paramV2).toString()
+        if (json.toByteArray(Charsets.UTF_8).size > MAX_FOCUS_PARAM_BYTES) return null
+        return json
+    }
+
+    /** Circular arc used by the small-island ring and the big-island progress block. */
+    private fun circularProgress(percent: Int) = JSONObject()
+        .put("progress", percent)
+        .put("max", 100)
+        .put("progressMax", 100)
+        .put("color", PROGRESS_COLOR)
+        .put("colorProgress", PROGRESS_COLOR)
+
+    /** Banner-level horizontal bar. */
+    private fun linearProgress(percent: Int) = JSONObject()
+        .put("progress", percent)
+        .put("max", 100)
+        .put("progressMax", 100)
+        .put("color", PROGRESS_COLOR)
+        .put("colorProgress", PROGRESS_COLOR)
+
+    private fun buildNotification(
+        title: String,
+        text: String,
+        percent: Int?,
+        ongoing: Boolean,
+    ): Notification.Builder {
+        val intent = Intent(context, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        }
+        val pending = PendingIntent.getActivity(
+            context,
+            0,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(context, CHANNEL_ID)
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Builder(context)
+        }
+        builder
+            .setSmallIcon(R.drawable.ic_xthief)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setContentIntent(pending)
+            .setOngoing(ongoing)
+            .setAutoCancel(!ongoing)
+            .setOnlyAlertOnce(true)
+            .setCategory(Notification.CATEGORY_STATUS)
+        if (percent != null) {
+            builder.setProgress(100, percent, false)
+        }
+        val bitmap = decodeIslandIcon()
+        if (bitmap != null) {
+            val icon = Icon.createWithBitmap(bitmap)
+            builder.extras.putBundle(
+                EXTRAS_PICS,
+                Bundle().apply {
+                    putParcelable(PIC_IMAGE_TEXT, icon)
+                    putParcelable(PIC_APP, icon)
+                    putParcelable(PIC_TICKER, icon)
+                    putParcelable(PIC_AOD, icon)
+                },
+            )
+        }
+        return builder
+    }
+
+    private fun post(id: Int, notification: Notification) {
+        runCatching { manager?.notify(id, notification) }
+    }
+
+    private fun decodeIslandIcon() = runCatching {
+        // The island art uses the full-colour app icon (ic_xthief), not the monochrome
+        // status-bar variant.
+        BitmapFactory.decodeResource(context.resources, R.drawable.ic_xthief)
+    }.getOrNull()
+
+    fun ensureChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        if (manager?.getNotificationChannel(CHANNEL_ID) != null) return
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            "下载任务",
+            NotificationManager.IMPORTANCE_DEFAULT,
+        ).apply {
+            description = "在小米超级岛与通知栏显示下载进度"
+            setShowBadge(false)
+        }
+        runCatching { manager?.createNotificationChannel(channel) }
+    }
+
+    companion object {
+        private const val CHANNEL_ID = "xthief_island"
+        private const val SIMULATION_ID = "xthief-island-simulation"
+
+        /** Default simulated download duration. */
+        const val DEFAULT_SIMULATION_MS = 15_000L
+
+        /** Holds the island JSON; SystemUI parses this extra as a string. */
+        private const val EXTRAS_PARAM = "miui.focus.param"
+        /** Holds the pictures referenced by `pic` keys inside the JSON. */
+        private const val EXTRAS_PICS = "miui.focus.pics"
+
+        private const val PARAM_V2 = "param_v2"
+
+        /** SystemUI rejects focus payloads larger than 3 KB. */
+        private const val MAX_FOCUS_PARAM_BYTES = 3_072
+
+        /** Must be a scenario HyperOS accepts for island display. */
+        private const val BUSINESS = "file_download"
+
+        /** Keys into the `miui.focus.pics` bundle; must match the `pic` values in the JSON. */
+        private const val PIC_IMAGE_TEXT = "miui.focus.pic_imageText"
+        private const val PIC_APP = "miui.focus.pic_xthief"
+        private const val PIC_TICKER = "miui.focus.pic_ticker"
+        private const val PIC_AOD = "miui.focus.pic_aod"
+
+        private const val PROGRESS_COLOR = "#3482FF"
+    }
+}

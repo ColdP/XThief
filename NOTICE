@@ -1,0 +1,28 @@
+XThief
+Copyright 2026 btm_m
+
+This product is licensed under the Apache License, Version 2.0.
+See the LICENSE file for the full license text.
+
+Third-party components
+----------------------
+
+MIUIX (top.yukonga.miuix.kmp)
+    Copyright 2024 yukonga
+    Licensed under the Apache License, Version 2.0
+    https://github.com/compose-miuix-ui/miuix
+
+Backdrop and Shapes (io.github.kyant0)
+    Copyright 2025 Kyant
+    Licensed under the Apache License, Version 2.0
+    https://github.com/Kyant0/Backdrop
+
+AndroidX / Jetpack Compose (androidx.*, org.jetbrains.compose.*)
+    Copyright The Android Open Source Project
+    Licensed under the Apache License, Version 2.0
+    https://developer.android.com/jetpack
+
+The bottom navigation interaction helpers under
+app/src/main/java/btm/m/xthief/ui/components/LiquidInteraction.kt are adapted from
+the Backdrop catalog's Apache-2.0 LiquidBottomTabs sample, and the four navigation
+bar styles follow the interaction model of HyperChanger (Copyright 2026 btm_m).
