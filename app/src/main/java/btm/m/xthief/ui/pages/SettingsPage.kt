@@ -129,6 +129,8 @@ fun SettingsPage(
     var confirmClearHistory by remember { mutableStateOf(false) }
     var showHiddenFolders by remember { mutableStateOf(false) }
     var editingCookie by remember { mutableStateOf(false) }
+    var editingBilibiliCookie by remember { mutableStateOf(false) }
+    var editingYoutubeCookie by remember { mutableStateOf(false) }
     var cookieAuthDraft by remember { mutableStateOf(settings.cookieAuthToken) }
     var cookieCsrfDraft by remember { mutableStateOf(settings.cookieCsrfToken) }
     var cookieUserDraft by remember { mutableStateOf(settings.cookieUserId) }
@@ -385,6 +387,21 @@ fun SettingsPage(
                         onClick = { editingCookie = true },
                     )
                 }
+                // The other two platforms keep a raw Cookie header instead of parsed fields.
+                ActionRow(
+                    title = "Bilibili Cookie",
+                    subtitle = settings.bilibiliCookie.takeIf { it.isNotBlank() }
+                        ?.let { "已设置 · 可解析 1080P 及以上" }
+                        ?: "未设置 · 填入 SESSDATA 可解锁高画质",
+                    onClick = { editingBilibiliCookie = true },
+                )
+                ActionRow(
+                    title = "YouTube Cookie",
+                    subtitle = settings.youtubeCookie.takeIf { it.isNotBlank() }
+                        ?.let { "已设置" }
+                        ?: "未设置 · 年龄限制或会员视频需要",
+                    onClick = { editingYoutubeCookie = true },
+                )
             }
         }
         item {
@@ -476,6 +493,90 @@ fun SettingsPage(
                 editingCookie = false
             },
         )
+    }
+
+    if (editingBilibiliCookie) {
+        RawCookieDialog(
+            title = "Bilibili Cookie",
+            hint = "从浏览器复制整段 Cookie，其中需要包含 SESSDATA；不填也能下载，但画质会被限制在 480P。",
+            initial = settings.bilibiliCookie,
+            onDismiss = { editingBilibiliCookie = false },
+            onSave = { value ->
+                update { it.copy(bilibiliCookie = value) }
+                editingBilibiliCookie = false
+            },
+        )
+    }
+
+    if (editingYoutubeCookie) {
+        RawCookieDialog(
+            title = "YouTube Cookie",
+            hint = "复制浏览器的整段 Cookie。普通视频无需填写，年龄限制或会员内容才需要。",
+            initial = settings.youtubeCookie,
+            onDismiss = { editingYoutubeCookie = false },
+            onSave = { value ->
+                update { it.copy(youtubeCookie = value) }
+                editingYoutubeCookie = false
+            },
+        )
+    }
+}
+
+/**
+ * Editor for a platform that takes a raw `Cookie:` header instead of parsed fields.
+ *
+ * Same shape as the other sheets: left-aligned heading, a hint, one multi-line box, then actions.
+ */
+@Composable
+private fun RawCookieDialog(
+    title: String,
+    hint: String,
+    initial: String,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit,
+) {
+    var draft by remember { mutableStateOf(initial) }
+
+    WindowDialog(show = true, onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                text = title,
+                modifier = Modifier.fillMaxWidth(),
+                style = MiuixTheme.textStyles.title3,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Start,
+            )
+            Text(
+                text = hint,
+                modifier = Modifier.fillMaxWidth(),
+                style = MiuixTheme.textStyles.footnote2,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                textAlign = TextAlign.Start,
+            )
+            XThiefTextField(
+                value = draft,
+                onValueChange = { draft = it },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = "name=value; name2=value2",
+                singleLine = false,
+            )
+            Row(
+                Modifier.fillMaxWidth().padding(top = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                GlassDialogButton(
+                    onClick = { onSave(draft.trim()) },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(
+                        color = Color(0xFF0088FF),
+                        contentColor = Color.White,
+                    ),
+                ) { Text("保存") }
+                GlassDialogButton(onClick = onDismiss, modifier = Modifier.weight(1f)) {
+                    Text("取消")
+                }
+            }
+        }
     }
 }
 

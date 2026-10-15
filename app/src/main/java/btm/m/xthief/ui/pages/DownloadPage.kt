@@ -53,6 +53,9 @@ import btm.m.xthief.ui.components.XThiefTextField
 import btm.m.xthief.ui.folderPathFromUri
 import btm.m.xthief.ui.hasAllFilesAccess
 import btm.m.xthief.ui.toast
+import btm.m.xthief.data.VideoLinks
+import java.io.IOException
+import btm.m.xthief.data.VideoPlatform
 import btm.m.xthief.x.TweetLink
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
@@ -79,6 +82,8 @@ fun DownloadTab(
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var media by remember { mutableStateOf<TweetMedia?>(null) }
+    /** Which site the current result came from; drives the label on the info card. */
+    var platform by remember { mutableStateOf(VideoPlatform.UNKNOWN) }
     var selected by remember { mutableStateOf<VideoVariant?>(null) }
     var showDirectoryDialog by remember { mutableStateOf(false) }
     var directoryDraft by remember { mutableStateOf(settings.customDirectory) }
@@ -99,9 +104,9 @@ fun DownloadTab(
     }
 
     fun resolve(target: String) {
-        val tweetId = TweetLink.extractId(target)
-        if (tweetId == null) {
-            error = "请输入有效的 X / Twitter 视频链接"
+        val parsed = VideoLinks.parse(target)
+        if (parsed == null) {
+            error = "请输入有效的 X / YouTube / Bilibili 视频链接"
             return
         }
         scope.launch {
@@ -109,7 +114,15 @@ fun DownloadTab(
             error = null
             media = null
             selected = null
-            runCatching { container.extractor.resolve(tweetId) }
+            platform = parsed.platform
+            runCatching {
+                when (parsed.platform) {
+                    VideoPlatform.X -> container.extractor.resolve(parsed.id)
+                    VideoPlatform.BILIBILI -> container.bilibiliExtractor.resolve(parsed.id)
+                    VideoPlatform.YOUTUBE -> container.youtubeExtractor.resolve(parsed.id)
+                    VideoPlatform.UNKNOWN -> throw IOException("不支持的平台")
+                }
+            }
                 .onSuccess { result ->
                     media = result
                     selected = when (settings.quality) {
@@ -123,7 +136,7 @@ fun DownloadTab(
     }
 
     LaunchedEffect(initialLink) {
-        val shared = initialLink?.takeIf { TweetLink.isXLink(it) }
+        val shared = initialLink?.takeIf { VideoLinks.isSupported(it) }
         if (shared != null) {
             link = shared
             resolve(shared)
@@ -134,7 +147,7 @@ fun DownloadTab(
         if (settings.autoPasteFromClipboard && link.isBlank()) {
             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
             val text = clipboard?.primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
-            if (TweetLink.isXLink(text)) {
+            if (VideoLinks.isSupported(text)) {
                 link = text
                 resolve(text)
             }
@@ -171,6 +184,7 @@ fun DownloadTab(
                 if (shown != null) {
                     ResultCard(
                         media = shown,
+                        platform = platform,
                         settings = settings,
                         selected = selected,
                         onSelect = { selected = it },
@@ -252,6 +266,7 @@ fun DownloadTab(
 @Composable
 private fun ResultCard(
     media: TweetMedia,
+    platform: VideoPlatform,
     settings: XThiefSettings,
     selected: VideoVariant?,
     onSelect: (VideoVariant) -> Unit,
@@ -303,10 +318,18 @@ private fun ResultCard(
             }
 
             Column(Modifier.fillMaxWidth().padding(top = 6.dp)) {
-                InfoRow("作者", TweetLink.displayAuthor(media.authorHandle, media.author))
-                InfoRow("推文 ID", media.tweetId)
+                // Rows differ per site: X shows the post author, Bilibili and YouTube the uploader.
+                InfoRow("平台", platform.label)
+                InfoRow(
+                    if (platform == VideoPlatform.X) "作者" else "UP 主",
+                    media.authorHandle.ifBlank { media.author }.ifBlank { "未知" },
+                )
+                InfoRow(
+                    if (platform == VideoPlatform.X) "推文 ID" else "视频 ID",
+                    media.tweetId,
+                )
                 if (media.text.isNotBlank()) {
-                    InfoRow("内容", media.text.take(60))
+                    InfoRow(if (platform == VideoPlatform.X) "内容" else "标题", media.text.take(60))
                 }
                 InfoRow("可用画质", "${media.videos.size} 个")
             }

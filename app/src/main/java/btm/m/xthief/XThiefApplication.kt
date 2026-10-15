@@ -12,6 +12,7 @@ import btm.m.xthief.data.XThiefSettingsStore
 import btm.m.xthief.x.IslandNotifier
 import btm.m.xthief.x.XDownloadManager
 import btm.m.xthief.x.XVideoExtractor
+import btm.m.xthief.yt.YoutubeExtractor
 
 /** Process-wide singletons shared by every screen. */
 class XThiefApplication : Application() {
@@ -22,6 +23,7 @@ class XThiefApplication : Application() {
     val thumbnailCache: ThumbnailCache by lazy { ThumbnailCache(this) }
     val extractor: XVideoExtractor by lazy { XVideoExtractor(settingsStore) }
     val bilibiliExtractor: BilibiliExtractor by lazy { BilibiliExtractor(settingsStore) }
+    val youtubeExtractor: YoutubeExtractor by lazy { YoutubeExtractor(settingsStore) }
     val downloadManager: XDownloadManager by lazy { XDownloadManager(this, settingsStore) }
     val islandNotifier: IslandNotifier by lazy { IslandNotifier(this) }
 

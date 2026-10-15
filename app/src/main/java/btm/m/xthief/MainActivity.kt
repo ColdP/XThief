@@ -12,8 +12,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import btm.m.xthief.data.VideoLinks
 import btm.m.xthief.ui.XThiefScreen
-import btm.m.xthief.x.TweetLink
 
 class MainActivity : ComponentActivity() {
 
@@ -39,6 +39,7 @@ class MainActivity : ComponentActivity() {
         val action = intent?.action ?: return null
         if (action != Intent.ACTION_SEND) return null
         val text = intent.getStringExtra(Intent.EXTRA_TEXT) ?: return null
-        return if (TweetLink.isXLink(text)) text else null
+        // Any supported platform, not just X.
+        return if (VideoLinks.isSupported(text)) text else null
     }
 }
