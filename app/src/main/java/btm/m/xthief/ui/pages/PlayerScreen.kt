@@ -11,10 +11,14 @@ import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.graphics.SurfaceTexture
 import android.media.AudioAttributes
+import android.media.MediaExtractor
+import android.media.MediaFormat
 import android.media.MediaPlayer
 import android.net.Uri
 import android.provider.MediaStore
 import android.view.Surface
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import android.view.TextureView
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
@@ -52,6 +56,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -283,6 +288,9 @@ fun PlayerScreen(
     var scrubMs by remember { mutableLongStateOf(0L) }
     var videoWidth by remember { mutableIntStateOf(0) }
     var videoHeight by remember { mutableIntStateOf(0) }
+    /** HDR clips need a SurfaceView, which the glass bars cannot sample. */
+    var isHdr by remember(source.uri) { mutableStateOf(false) }
+    val useSurfaceView = isHdr
     /** Position a seek is heading to; -1 when idle. Keeps the poll from undoing the seek. */
     var pendingSeekMs by remember { mutableLongStateOf(-1L) }
     /** Measured size of the video surface, so the letterbox follows rotation. */
@@ -397,6 +405,22 @@ fun PlayerScreen(
         runCatching { media.setSurface(target) }
     }
 
+    // Probe the clip once; the result picks the surface type and the letterbox strategy.
+    LaunchedEffect(source.uri) {
+        isHdr = withContext(Dispatchers.IO) {
+            isHdrVideo(context, Uri.parse(source.uri))
+        }
+    }
+
+    LaunchedEffect(player, useSurfaceView) {
+        if (useSurfaceView) {
+            // A SurfaceView exposes no transform, so the player has to fit the frame itself.
+            runCatching {
+                player?.setVideoScalingMode(MediaPlayer.VIDEO_SCALING_MODE_SCALE_TO_FIT)
+            }
+        }
+    }
+
     // Playback clock. Runs unconditionally so the play/pause button always mirrors the player,
     // including while paused. While a seek is settling the reported position is ignored, otherwise
     // the bar snaps back to the old spot before seekTo lands.
@@ -457,75 +481,122 @@ fun PlayerScreen(
                     .graphicsLayer { translationY = swipeOffset.value }
                     .layerBackdrop(backdrop),
             ) {
-                AndroidView(
-                    factory = { ctx ->
-                        TextureView(ctx).apply {
-                            textureView = this
-                            surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-                                override fun onSurfaceTextureAvailable(
-                                    texture: SurfaceTexture,
-                                    width: Int,
-                                    height: Int,
-                                ) {
-                                    drawSurface = Surface(texture)
+                // HDR clips get a SurfaceView so the layer reaches the display untouched; SDR
+                // clips keep the TextureView so the glass bars can still sample the picture.
+                // `key` forces the host view to be rebuilt when the kind changes.
+                key(useSurfaceView) {
+                    if (useSurfaceView) {
+                        AndroidView(
+                            factory = { ctx ->
+                                SurfaceView(ctx).apply {
+                                    holder.addCallback(object : SurfaceHolder.Callback {
+                                        override fun surfaceCreated(holder: SurfaceHolder) {
+                                            drawSurface = holder.surface
+                                        }
+
+                                        override fun surfaceChanged(
+                                            holder: SurfaceHolder,
+                                            format: Int,
+                                            width: Int,
+                                            height: Int,
+                                        ) = Unit
+
+                                        override fun surfaceDestroyed(holder: SurfaceHolder) {
+                                            drawSurface = null
+                                        }
+                                    })
                                 }
+                            },
+                            update = { surfaceView ->
+                                // A SurfaceView has no transform matrix, so the picture is letterboxed
+                                // by the player itself.
+                                surfaceView.holder.setFixedSize(videoWidth, videoHeight)
+                            },
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .onSizeChanged { viewSize = it }
+                                .graphicsLayer {
+                                    scaleX = scale
+                                    scaleY = scale
+                                    translationX = offset.x
+                                    translationY = offset.y
+                                },
+                        )
+                    } else {
+                        AndroidView(
+                            factory = { ctx ->
+                                TextureView(ctx).apply {
+                                    textureView = this
+                                    surfaceTextureListener =
+                                        object : TextureView.SurfaceTextureListener {
+                                            override fun onSurfaceTextureAvailable(
+                                                texture: SurfaceTexture,
+                                                width: Int,
+                                                height: Int,
+                                            ) {
+                                                drawSurface = Surface(texture)
+                                            }
 
-                                override fun onSurfaceTextureSizeChanged(
-                                    texture: SurfaceTexture,
-                                    width: Int,
-                                    height: Int,
-                                ) = Unit
+                                            override fun onSurfaceTextureSizeChanged(
+                                                texture: SurfaceTexture,
+                                                width: Int,
+                                                height: Int,
+                                            ) = Unit
 
-                                override fun onSurfaceTextureDestroyed(
-                                    texture: SurfaceTexture,
-                                ): Boolean {
-                                    drawSurface = null
-                                    return true
+                                            override fun onSurfaceTextureDestroyed(
+                                                texture: SurfaceTexture,
+                                            ): Boolean {
+                                                drawSurface = null
+                                                return true
+                                            }
+
+                                            override fun onSurfaceTextureUpdated(
+                                                texture: SurfaceTexture,
+                                            ) = Unit
+                                        }
                                 }
-
-                                override fun onSurfaceTextureUpdated(texture: SurfaceTexture) = Unit
-                            }
-                        }
-                    },
-                    update = { textureView ->
-                        // Reading the measured size here makes the letterbox recompute when the
-                        // screen rotates, not just when the video's own size arrives.
-                        val bounds = viewSize
-                        val vw = videoWidth
-                        val vh = videoHeight
-                        if (vw <= 0 || vh <= 0 || bounds.width <= 0 || bounds.height <= 0) {
-                            return@AndroidView
-                        }
-                        val viewRatio = bounds.width.toFloat() / bounds.height
-                        val videoRatio = vw.toFloat() / vh
-                        val matrix = Matrix()
-                        if (videoRatio > viewRatio) {
-                            matrix.setScale(
-                                1f,
-                                viewRatio / videoRatio,
-                                bounds.width / 2f,
-                                bounds.height / 2f,
-                            )
-                        } else {
-                            matrix.setScale(
-                                videoRatio / viewRatio,
-                                1f,
-                                bounds.width / 2f,
-                                bounds.height / 2f,
-                            )
-                        }
-                        textureView.setTransform(matrix)
-                    },
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .onSizeChanged { viewSize = it }
-                        .graphicsLayer {
-                            scaleX = scale
-                            scaleY = scale
-                            translationX = offset.x
-                            translationY = offset.y
-                        },
-                )
+                            },
+                            update = { textureView ->
+                                // Reading the measured size here makes the letterbox recompute when
+                                // the screen rotates, not just when the video's own size arrives.
+                                val bounds = viewSize
+                                val vw = videoWidth
+                                val vh = videoHeight
+                                if (vw <= 0 || vh <= 0 || bounds.width <= 0 || bounds.height <= 0) {
+                                    return@AndroidView
+                                }
+                                val viewRatio = bounds.width.toFloat() / bounds.height
+                                val videoRatio = vw.toFloat() / vh
+                                val matrix = Matrix()
+                                if (videoRatio > viewRatio) {
+                                    matrix.setScale(
+                                        1f,
+                                        viewRatio / videoRatio,
+                                        bounds.width / 2f,
+                                        bounds.height / 2f,
+                                    )
+                                } else {
+                                    matrix.setScale(
+                                        videoRatio / viewRatio,
+                                        1f,
+                                        bounds.width / 2f,
+                                        bounds.height / 2f,
+                                    )
+                                }
+                                textureView.setTransform(matrix)
+                            },
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .onSizeChanged { viewSize = it }
+                                .graphicsLayer {
+                                    scaleX = scale
+                                    scaleY = scale
+                                    translationX = offset.x
+                                    translationY = offset.y
+                                },
+                        )
+                    }
+                }
             }
 
             // Gestures on the video itself: tap toggles the chrome, double tap plays/pauses, long
@@ -1046,6 +1117,37 @@ private fun PlayerToolbarItem(
         )
     }
 }
+
+/**
+ * True when the clip carries an HDR transfer curve (HDR10 / HLG).
+ *
+ * This decides which surface is used: a TextureView is composited through the GPU, which flattens
+ * HDR to SDR, while a SurfaceView passes the layer straight to the display and keeps it. The
+ * trade-off is that a SurfaceView sits in its own layer, so the glass bars can no longer sample the
+ * picture behind them.
+ */
+private fun isHdrVideo(context: Context, uri: Uri): Boolean = runCatching {
+    val extractor = MediaExtractor()
+    try {
+        extractor.setDataSource(context, uri, null)
+        for (index in 0 until extractor.trackCount) {
+            val format = extractor.getTrackFormat(index)
+            val mime = format.getString(MediaFormat.KEY_MIME).orEmpty()
+            if (!mime.startsWith("video/")) continue
+            if (!format.containsKey(MediaFormat.KEY_COLOR_TRANSFER)) continue
+            val transfer = format.getInteger(MediaFormat.KEY_COLOR_TRANSFER)
+            if (
+                transfer == MediaFormat.COLOR_TRANSFER_ST2084 ||
+                transfer == MediaFormat.COLOR_TRANSFER_HLG
+            ) {
+                return@runCatching true
+            }
+        }
+        false
+    } finally {
+        runCatching { extractor.release() }
+    }
+}.getOrDefault(false)
 
 /** Everything the info panel shows about the file behind a clip. */
 private data class MediaFileInfo(
