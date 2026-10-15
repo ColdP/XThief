@@ -97,6 +97,7 @@ import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.HorizontalDivider
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
@@ -184,6 +185,9 @@ private const val SWIPE_ANIM_MS = 240
 
 /** How close the player must get to a requested position before polling resumes from it. */
 private const val SEEK_SETTLE_MS = 1_200L
+
+/** The app's brand accent, used for the primary action in the info sheet. */
+private val BrandBlue = Color(0xFF0088FF)
 
 /** Top bar: the same floating capsule as the bottom bars, one row tall. */
 private val TOP_BAR_HEIGHT = 56.dp
@@ -298,7 +302,6 @@ fun PlayerScreen(
     var offset by remember { mutableStateOf(Offset.Zero) }
     var chromeVisible by remember { mutableStateOf(true) }
     var showInfo by remember { mutableStateOf(false) }
-    var fileInfo by remember(source.uri) { mutableStateOf<MediaFileInfo?>(null) }
 
     // Sample the video so every glass surface and its content follows what is actually behind it.
     var textureView by remember { mutableStateOf<TextureView?>(null) }
@@ -435,18 +438,10 @@ fun PlayerScreen(
         }
     }
 
-    // Read the file's details on demand, the first time the info sheet is opened for this clip.
-    LaunchedEffect(source.uri, showInfo) {
-        if (showInfo) {
-            fileInfo = withContext(Dispatchers.IO) { loadMediaInfo(context, source.uri) }
-        }
-    }
-
     PlayerInfoDialog(
         show = showInfo,
         title = source.title,
         uri = source.uri,
-        info = fileInfo,
         onDismiss = { showInfo = false },
     )
 
@@ -1098,41 +1093,70 @@ private fun dateLabel(millis: Long): String {
 }
 
 /**
- * Info sheet: file name and path in the dialog's own title/summary slots, then a divider and the
- * file's details.
+ * Info sheet: file name and path drawn left-aligned, then a divider and the file's details.
+ *
+ * The details are loaded here rather than passed in, so this sheet's own state change is what
+ * recomposes the text once the query returns.
  */
 @Composable
 private fun PlayerInfoDialog(
     show: Boolean,
     title: String,
     uri: String,
-    info: MediaFileInfo?,
     onDismiss: () -> Unit,
 ) {
+    val context = LocalContext.current
+    var info by remember(uri) { mutableStateOf<MediaFileInfo?>(null) }
+    LaunchedEffect(show, uri) {
+        if (show) {
+            info = null
+            info = withContext(Dispatchers.IO) { loadMediaInfo(context, uri) }
+        }
+    }
+    val path = info?.path?.takeIf { it.isNotBlank() } ?: uri
+
     WindowDialog(
         show = show,
-        title = title,
-        summary = info?.path?.takeIf { it.isNotBlank() } ?: uri,
         onDismissRequest = onDismiss,
     ) {
         Column(Modifier.fillMaxWidth()) {
-            HorizontalDivider()
-            Spacer(Modifier.height(12.dp))
-            InfoLine("时长", if (info != null) formatTime(info.durationMs) else "读取中…")
-            InfoLine("大小", if (info != null) fileSizeLabel(info.sizeBytes) else "读取中…")
-            InfoLine(
-                "修改时间",
-                if (info != null) dateLabel(info.modifiedAt) else "读取中…",
+            // WindowDialog's own title/summary slots are centred, so both lines are drawn here.
+            Text(
+                text = title,
+                modifier = Modifier.fillMaxWidth(),
+                style = MiuixTheme.textStyles.title3,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Start,
             )
-            Spacer(Modifier.height(8.dp))
-            GlassDialogButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) {
+            Text(
+                text = path,
+                modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+                style = MiuixTheme.textStyles.footnote2,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                textAlign = TextAlign.Start,
+            )
+            Spacer(Modifier.height(12.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(4.dp))
+            InfoLine("时长", info?.let { formatTime(it.durationMs) } ?: "读取中…")
+            InfoLine("大小", info?.let { fileSizeLabel(it.sizeBytes) } ?: "读取中…")
+            InfoLine("修改时间", info?.let { dateLabel(it.modifiedAt) } ?: "读取中…")
+            Spacer(Modifier.height(10.dp))
+            GlassDialogButton(
+                onClick = onDismiss,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(
+                    color = BrandBlue,
+                    contentColor = Color.White,
+                ),
+            ) {
                 Text("完成")
             }
         }
     }
 }
 
-/** One label/value pair inside the info sheet. */
+/** One label/value pair inside the info sheet; label left, value right. */
 @Composable
 private fun InfoLine(label: String, value: String) {
     Row(
@@ -1143,6 +1167,7 @@ private fun InfoLine(label: String, value: String) {
             text = label,
             style = MiuixTheme.textStyles.body2,
             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            textAlign = TextAlign.Start,
         )
         Spacer(Modifier.weight(1f))
         Text(

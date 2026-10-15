@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 btm_m
 package btm.m.xthief.ui.components
 
@@ -18,6 +18,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Text
@@ -39,30 +40,47 @@ fun XThiefDialog(
 ) {
     WindowDialog(
         show = true,
-        title = title,
-        summary = message,
         onDismissRequest = onDismiss,
     ) {
-        Row(
-            Modifier.fillMaxWidth().padding(top = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            GlassDialogButton(
-                onClick = onDismiss,
-                modifier = Modifier.weight(1f),
-            ) { Text(dismissText) }
-            GlassDialogButton(
-                onClick = onConfirm,
-                modifier = Modifier.weight(1f),
-                colors = if (destructive) {
-                    ButtonDefaults.buttonColors(
-                        color = MiuixTheme.colorScheme.error,
-                        contentColor = MiuixTheme.colorScheme.onError,
-                    )
-                } else {
-                    ButtonDefaults.buttonColorsPrimary()
-                },
-            ) { Text(confirmText) }
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            // Drawn here instead of through WindowDialog's title/summary slots: those are
+            // hard-coded to TextAlign.Center, and HyperChanger's dialogs read left-aligned.
+            // Button labels stay centred.
+            Text(
+                text = title,
+                modifier = Modifier.fillMaxWidth(),
+                style = MiuixTheme.textStyles.title3,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Start,
+            )
+            Text(
+                text = message,
+                modifier = Modifier.fillMaxWidth(),
+                style = MiuixTheme.textStyles.body2,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                textAlign = TextAlign.Start,
+            )
+            Row(
+                Modifier.fillMaxWidth().padding(top = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                GlassDialogButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.weight(1f),
+                ) { Text(dismissText) }
+                GlassDialogButton(
+                    onClick = onConfirm,
+                    modifier = Modifier.weight(1f),
+                    colors = if (destructive) {
+                        ButtonDefaults.buttonColors(
+                            color = MiuixTheme.colorScheme.error,
+                            contentColor = MiuixTheme.colorScheme.onError,
+                        )
+                    } else {
+                        ButtonDefaults.buttonColorsPrimary()
+                    },
+                ) { Text(confirmText) }
+            }
         }
     }
 }
