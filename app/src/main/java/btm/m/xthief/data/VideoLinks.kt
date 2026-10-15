@@ -57,14 +57,38 @@ object VideoLinks {
 
     /** `BV…` ids and legacy `av…` numbers. */
     private val bilibiliId = listOf(
-        Regex("""(BV[0-9A-Za-z]{10})"""),
+        Regex("""(BV[0-9A-Za-z]{10})""", RegexOption.IGNORE_CASE),
         Regex("""/video/av(\d+)""", RegexOption.IGNORE_CASE),
         Regex("""[?&]aid=(\d+)""", RegexOption.IGNORE_CASE),
+        Regex("""[?&]bvid=(BV[0-9A-Za-z]{10})""", RegexOption.IGNORE_CASE),
+        // `av` with a word boundary in front, so a path segment like "have123" is not mistaken.
+        Regex("""(?:^|[^0-9A-Za-z])av(\d+)""", RegexOption.IGNORE_CASE),
     )
+
+    /** A bare `BV…` id pasted on its own. */
+    private val bareBvId = Regex("""^BV[0-9A-Za-z]{10}$""", RegexOption.IGNORE_CASE)
+
+    /** A bare `av…` id pasted on its own. */
+    private val bareAvId = Regex("""^av(\d+)$""", RegexOption.IGNORE_CASE)
+
+    /** Short links that have to be expanded over the network before an id can be read out. */
+    private val shortLinkHost = Regex(
+        """(?:^|//|\.)b23\.tv/""",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /** True when [raw] is a `b23.tv` short link, which only a redirect reveals the id of. */
+    fun isShortLink(raw: String): Boolean = shortLinkHost.containsMatchIn(raw)
+
+    /** `bv…` is accepted as input but the canonical form always starts with an uppercase `BV`. */
+    private fun canonicalBv(raw: String): String = "BV" + raw.drop(2)
 
     fun platformOf(raw: String): VideoPlatform {
         val input = raw.trim()
         if (input.isEmpty()) return VideoPlatform.UNKNOWN
+        // Order matters: a bare number is an X status id, so the Bilibili prefixes come first.
+        if (bareBvId.matches(input)) return VideoPlatform.BILIBILI
+        if (bareAvId.matches(input)) return VideoPlatform.BILIBILI
         if (bareXId.matches(input)) return VideoPlatform.X
         return when {
             xHost.containsMatchIn(input) -> VideoPlatform.X
@@ -78,11 +102,30 @@ object VideoLinks {
     fun parse(raw: String): VideoTarget? {
         val input = raw.trim()
         if (input.isEmpty()) return null
-        val decoded = runCatching { URLDecoder.decode(input, "UTF-8") }.getOrDefault(input)
 
+        // Bare ids first: a share sheet or a manual paste usually yields one of these, with no URL
+        // for the host patterns to match.
         if (bareXId.matches(input)) {
             return VideoTarget(VideoPlatform.X, input, "https://x.com/i/status/$input")
         }
+        bareBvId.matchEntire(input)?.let {
+            val bv = canonicalBv(it.value)
+            return VideoTarget(
+                VideoPlatform.BILIBILI,
+                bv,
+                "https://www.bilibili.com/video/$bv",
+            )
+        }
+        bareAvId.matchEntire(input)?.let {
+            val aid = it.groupValues[1]
+            return VideoTarget(
+                VideoPlatform.BILIBILI,
+                "av$aid",
+                "https://www.bilibili.com/video/av$aid",
+            )
+        }
+
+        val decoded = runCatching { URLDecoder.decode(input, "UTF-8") }.getOrDefault(input)
         return when (platformOf(decoded)) {
             VideoPlatform.X -> {
                 xId.firstNotNullOfOrNull { it.find(decoded)?.groupValues?.getOrNull(1) }

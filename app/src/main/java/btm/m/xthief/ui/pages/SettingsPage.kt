@@ -390,9 +390,11 @@ fun SettingsPage(
                 // The other two platforms keep a raw Cookie header instead of parsed fields.
                 ActionRow(
                     title = "Bilibili Cookie",
-                    subtitle = settings.bilibiliCookie.takeIf { it.isNotBlank() }
-                        ?.let { "已设置 · 可解析 1080P 及以上" }
-                        ?: "未设置 · 填入 SESSDATA 可解锁高画质",
+                    subtitle = when {
+                        settings.bilibiliSessdata.isBlank() -> "未设置 · 填入 SESSDATA 解锁 1080P 及以上"
+                        settings.bilibiliJct.isBlank() -> "已设置 SESSDATA · 建议补上 bili_jct"
+                        else -> "已设置 · SESSDATA、bili_jct"
+                    },
                     onClick = { editingBilibiliCookie = true },
                 )
                 ActionRow(
@@ -496,13 +498,19 @@ fun SettingsPage(
     }
 
     if (editingBilibiliCookie) {
-        RawCookieDialog(
-            title = "Bilibili Cookie",
-            hint = "从浏览器复制整段 Cookie，其中需要包含 SESSDATA；不填也能下载，但画质会被限制在 480P。",
-            initial = settings.bilibiliCookie,
+        BilibiliCookieDialog(
+            sessdata = settings.bilibiliSessdata,
+            jct = settings.bilibiliJct,
+            userId = settings.bilibiliUserId,
             onDismiss = { editingBilibiliCookie = false },
-            onSave = { value ->
-                update { it.copy(bilibiliCookie = value) }
+            onSave = { sessdata, jct, userId ->
+                update {
+                    it.copy(
+                        bilibiliSessdata = sessdata,
+                        bilibiliJct = jct,
+                        bilibiliUserId = userId,
+                    )
+                }
                 editingBilibiliCookie = false
             },
         )
@@ -519,6 +527,79 @@ fun SettingsPage(
                 editingYoutubeCookie = false
             },
         )
+    }
+}
+
+/**
+ * Bilibili login cookies, one field per row.
+ *
+ * Browsers list cookies one name/value pair at a time, so asking for a single pasted header string
+ * was both awkward and easy to get wrong. `SESSDATA` is the only one that matters for quality;
+ * `bili_jct` and `DedeUserID` are optional.
+ */
+@Composable
+private fun BilibiliCookieDialog(
+    sessdata: String,
+    jct: String,
+    userId: String,
+    onDismiss: () -> Unit,
+    onSave: (String, String, String) -> Unit,
+) {
+    var sessdataDraft by remember { mutableStateOf(sessdata) }
+    var jctDraft by remember { mutableStateOf(jct) }
+    var userIdDraft by remember { mutableStateOf(userId) }
+
+    WindowDialog(show = true, onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                text = "Bilibili Cookie",
+                modifier = Modifier.fillMaxWidth(),
+                style = MiuixTheme.textStyles.title3,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Start,
+            )
+            Text(
+                text = "在浏览器打开 bilibili.com → F12 → Application → Cookies，按名称逐项填入。" +
+                    "只填 SESSDATA 即可；注意 SESSDATA 的值很长且含逗号，要完整复制。",
+                modifier = Modifier.fillMaxWidth(),
+                style = MiuixTheme.textStyles.footnote2,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                textAlign = TextAlign.Start,
+            )
+            CookieField("SESSDATA", sessdataDraft) { sessdataDraft = it }
+            CookieField("bili_jct（可选）", jctDraft) { jctDraft = it }
+            CookieField("DedeUserID（可选）", userIdDraft) { userIdDraft = it }
+            Row(
+                Modifier.fillMaxWidth().padding(top = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                GlassDialogButton(
+                    onClick = { onSave(sessdataDraft.trim(), jctDraft.trim(), userIdDraft.trim()) },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(
+                        color = Color(0xFF0088FF),
+                        contentColor = Color.White,
+                    ),
+                ) { Text("保存") }
+                GlassDialogButton(onClick = onDismiss, modifier = Modifier.weight(1f)) {
+                    Text("取消")
+                }
+            }
+        }
+    }
+}
+
+/** One labelled cookie input inside [BilibiliCookieDialog]. */
+@Composable
+private fun CookieField(label: String, value: String, onValueChange: (String) -> Unit) {
+    Column(Modifier.fillMaxWidth()) {
+        Text(
+            text = label,
+            style = MiuixTheme.textStyles.footnote2,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+        )
+        Spacer(Modifier.height(6.dp))
+        XThiefTextField(value = value, onValueChange = onValueChange)
     }
 }
 

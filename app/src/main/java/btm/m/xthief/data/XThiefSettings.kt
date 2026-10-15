@@ -99,8 +99,13 @@ data class XThiefSettings(
     val cookieGuestId: String = "",
     /** Raw `Cookie:` header sent to YouTube; needed for age-restricted or members-only videos. */
     val youtubeCookie: String = "",
-    /** Raw `Cookie:` header sent to Bilibili; `SESSDATA` is what unlocks 1080p and above. */
-    val bilibiliCookie: String = "",
+    /**
+     * Bilibili cookies, entered one field at a time the way a browser's cookie table lists them.
+     * `SESSDATA` alone is usually enough; `bili_jct` and `DedeUserID` are optional extras.
+     */
+    val bilibiliSessdata: String = "",
+    val bilibiliJct: String = "",
+    val bilibiliUserId: String = "",
     /** Media library layout: a plain list or a two-column staggered grid. */
     val libraryViewMode: String = LIBRARY_VIEW_LIST,
     /** Blurs the cover of videos whose source post was flagged sensitive. */
@@ -144,6 +149,24 @@ data class XThiefSettings(
     /** Value for the `x-csrf-token` header, or null when cookie mode is not usable. */
     val cookieCsrfHeader: String?
         get() = cookieHeader?.let { cookieCsrfToken.trim() }
+
+    /**
+     * Assembled `Cookie:` header for Bilibili, or null when `SESSDATA` is missing.
+     *
+     * The fields are stored separately because that is how a browser lists them, and `SESSDATA`
+     * values contain commas / `%2C` that must reach the server untouched, so nothing is re-encoded
+     * here.
+     */
+    val bilibiliCookieHeader: String?
+        get() {
+            val sessdata = bilibiliSessdata.trim()
+            if (sessdata.isEmpty()) return null
+            return buildList {
+                add("SESSDATA=$sessdata")
+                bilibiliJct.trim().takeIf { it.isNotEmpty() }?.let { add("bili_jct=$it") }
+                bilibiliUserId.trim().takeIf { it.isNotEmpty() }?.let { add("DedeUserID=$it") }
+            }.joinToString("; ")
+        }
 }
 
 class XThiefSettingsStore(context: Context) {
@@ -183,7 +206,9 @@ class XThiefSettingsStore(context: Context) {
         cookieUserId = prefs.getString(KEY_COOKIE_USER, null).orEmpty(),
         cookieGuestId = prefs.getString(KEY_COOKIE_GUEST, null).orEmpty(),
         youtubeCookie = prefs.getString(KEY_COOKIE_YOUTUBE, null).orEmpty(),
-        bilibiliCookie = prefs.getString(KEY_COOKIE_BILIBILI, null).orEmpty(),
+        bilibiliSessdata = prefs.getString(KEY_COOKIE_BILI_SESSDATA, null).orEmpty(),
+        bilibiliJct = prefs.getString(KEY_COOKIE_BILI_JCT, null).orEmpty(),
+        bilibiliUserId = prefs.getString(KEY_COOKIE_BILI_USERID, null).orEmpty(),
         libraryViewMode = prefs.getString(KEY_LIBRARY_VIEW, null) ?: LIBRARY_VIEW_LIST,
         blurSensitiveCovers = prefs.getBoolean(KEY_BLUR_SENSITIVE, true),
         shortVideoMode = prefs.getBoolean(KEY_SHORT_VIDEO, false),
@@ -214,7 +239,9 @@ class XThiefSettingsStore(context: Context) {
             .putString(KEY_COOKIE_USER, value.cookieUserId)
             .putString(KEY_COOKIE_GUEST, value.cookieGuestId)
             .putString(KEY_COOKIE_YOUTUBE, value.youtubeCookie)
-            .putString(KEY_COOKIE_BILIBILI, value.bilibiliCookie)
+            .putString(KEY_COOKIE_BILI_SESSDATA, value.bilibiliSessdata)
+            .putString(KEY_COOKIE_BILI_JCT, value.bilibiliJct)
+            .putString(KEY_COOKIE_BILI_USERID, value.bilibiliUserId)
             .putString(KEY_LIBRARY_VIEW, value.libraryViewMode)
             .putBoolean(KEY_BLUR_SENSITIVE, value.blurSensitiveCovers)
             .putBoolean(KEY_SHORT_VIDEO, value.shortVideoMode)
@@ -258,7 +285,9 @@ private const val KEY_COOKIE_CSRF = "cookie_ct0"
 private const val KEY_COOKIE_USER = "cookie_twid"
 private const val KEY_COOKIE_GUEST = "cookie_guest_id"
 private const val KEY_COOKIE_YOUTUBE = "cookie_youtube"
-private const val KEY_COOKIE_BILIBILI = "cookie_bilibili"
+private const val KEY_COOKIE_BILI_SESSDATA = "cookie_bili_sessdata"
+private const val KEY_COOKIE_BILI_JCT = "cookie_bili_jct"
+private const val KEY_COOKIE_BILI_USERID = "cookie_bili_userid"
 private const val KEY_LIBRARY_VIEW = "library_view_mode"
 private const val KEY_BLUR_SENSITIVE = "blur_sensitive_covers"
 private const val KEY_SHORT_VIDEO = "short_video_mode"

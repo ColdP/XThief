@@ -26,10 +26,16 @@ class BilibiliException(message: String) : IOException(message)
 class BilibiliExtractor(private val settingsStore: XThiefSettingsStore) {
 
     suspend fun resolve(videoId: String): TweetMedia = withContext(Dispatchers.IO) {
-        val bvid = normalizeId(videoId)
-        val cookie = settingsStore.current.bilibiliCookie.trim().takeIf { it.isNotEmpty() }
+        val id = videoId.trim()
+        // The API takes `bvid` for BV ids and `aid` for legacy av numbers.
+        val query = if (id.startsWith("av", ignoreCase = true)) {
+            "aid=${id.drop(2)}"
+        } else {
+            "bvid=$id"
+        }
+        val cookie = settingsStore.current.bilibiliCookieHeader
 
-        val view = request("$VIEW_URL?bvid=$bvid", cookie)
+        val view = request("$VIEW_URL?$query", cookie)
         if (view.optInt("code", -1) != 0) {
             throw BilibiliException(
                 "Bilibili 返回错误（${view.optInt("code")}）：" +
@@ -39,16 +45,38 @@ class BilibiliExtractor(private val settingsStore: XThiefSettingsStore) {
         val data = view.optJSONObject("data")
             ?: throw BilibiliException("响应缺少视频信息")
 
+        // Re-read the canonical BV id: an av link's response carries it, which the filename uses.
+        val canonicalId = data.optString("bvid").takeIf { it.isNotBlank() } ?: id
+
         // First part only; multi-part videos would need a part picker.
         val cid = data.optJSONArray("pages")?.optJSONObject(0)?.optLong("cid", 0L)
             ?.takeIf { it > 0L }
             ?: data.optLong("cid", 0L)
         if (cid <= 0L) throw BilibiliException("无法获取视频 cid")
 
-        val play = request(
-            "$PLAYURL_URL?bvid=$bvid&cid=$cid&qn=$MAX_QN&fnval=$FNVAL_DASH&fourk=1",
-            cookie,
-        )
+        // WBI signing is what actually unlocks the higher qualities; without it the API answers
+        // 200 with only the low renditions, regardless of `qn`.
+        val keys = fetchWbiKeys(cookie)
+        val playParams = buildMap {
+            if (id.startsWith("av", ignoreCase = true)) {
+                put("aid", id.drop(2))
+            } else {
+                put("bvid", id)
+            }
+            put("cid", cid.toString())
+            put("qn", MAX_QN.toString())
+            put("fnval", FNVAL_DASH.toString())
+            put("fnver", "0")
+            put("fourk", "1")
+        }
+        val signed = if (keys != null) {
+            WbiSigner.sign(playParams, keys)
+        } else {
+            playParams
+        }
+        val signedQuery = signed.entries.joinToString("&") { (key, value) -> "$key=$value" }
+
+        val play = request("$PLAYURL_URL?$signedQuery", cookie)
         if (play.optInt("code", -1) != 0) {
             throw BilibiliException(
                 "Bilibili 播放地址请求失败（${play.optInt("code")}）：" +
@@ -88,7 +116,7 @@ class BilibiliExtractor(private val settingsStore: XThiefSettingsStore) {
         if (variants.isEmpty()) throw BilibiliException("没有解析到可下载的视频流")
 
         TweetMedia(
-            tweetId = bvid,
+            tweetId = canonicalId,
             author = data.optJSONObject("owner")?.optString("name").orEmpty(),
             authorHandle = data.optJSONObject("owner")?.optString("name")?.let { "@$it" }.orEmpty(),
             text = data.optString("title"),
@@ -97,14 +125,10 @@ class BilibiliExtractor(private val settingsStore: XThiefSettingsStore) {
         )
     }
 
-    /** Accepts a `BV…` id or a legacy `av…` number and returns something the API takes. */
-    private fun normalizeId(raw: String): String {
-        val trimmed = raw.trim()
-        if (trimmed.startsWith("av", ignoreCase = true)) {
-            throw BilibiliException("暂不支持 av 号，请使用 BV 号链接")
-        }
-        return trimmed
-    }
+    /** Fetches the daily WBI keys; a failure just means the request goes out unsigned. */
+    private fun fetchWbiKeys(cookie: String?): WbiSigner.WbiKeys? = runCatching {
+        WbiSigner.keysFromNav(request(NAV_URL, cookie))
+    }.getOrNull()
 
     private fun request(url: String, cookie: String?): JSONObject {
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
@@ -130,6 +154,7 @@ class BilibiliExtractor(private val settingsStore: XThiefSettingsStore) {
     private companion object {
         const val VIEW_URL = "https://api.bilibili.com/x/web-interface/view"
         const val PLAYURL_URL = "https://api.bilibili.com/x/player/playurl"
+        const val NAV_URL = "https://api.bilibili.com/x/web-interface/nav"
 
         /** 127 = 8K; the API clamps this to whatever the account may actually access. */
         const val MAX_QN = 127
