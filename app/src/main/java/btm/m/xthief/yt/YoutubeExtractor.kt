@@ -39,20 +39,43 @@ class YoutubeExtractor(private val settingsStore: XThiefSettingsStore) {
 
     suspend fun resolve(videoId: String): TweetMedia = withContext(Dispatchers.IO) {
         val cookie = settingsStore.current.youtubeCookieHeader
-        // Which clients YouTube accepts depends on IP, region and account, so every client is
-        // tried in turn and the first that returns streams wins.
-        //
-        // Collect the failures so the message can say what each client complained about.
+
+        // Every client is queried and the results are merged rather than stopping at the first
+        // success, because the clients do not offer the same thing: measured here, `ANDROID`
+        // returns a 360p progressive MP4 while `VISIONOS` is the one that exposes direct URLs for
+        // the 1080p/1440p/4K adaptive renditions. Taking only the first success capped every
+        // download at 360p.
         val attempts = mutableListOf<String>()
+        val merged = LinkedHashMap<String, VideoVariant>()
+        var meta: TweetMedia? = null
+
         for (client in ALL_CLIENTS) {
             val result = runCatching { player(videoId, client, cookie) }
-            result.onSuccess { return@withContext it }
-            val reason = result.exceptionOrNull()?.message ?: "未知错误"
-            attempts += "${client.name}: $reason"
+            result.onSuccess { media ->
+                if (meta == null) meta = media
+                media.videos.forEach { variant ->
+                    // Key on resolution + bitrate: the same rendition from two clients is identical.
+                    val key = "${variant.height}:${variant.bitrate}:${variant.audioUrl != null}"
+                    val existing = merged[key]
+                    // Prefer a copy that has a separate audio track, since adaptive video is silent.
+                    if (existing == null || (existing.audioUrl == null && variant.audioUrl != null)) {
+                        merged[key] = variant
+                    }
+                }
+            }
+            result.exceptionOrNull()?.let {
+                attempts += "${client.name}: ${it.message ?: "未知错误"}"
+            }
         }
-        throw YoutubeException(
-            "所有 YouTube 客户端都无法解析：\n" + attempts.joinToString("\n"),
-        )
+
+        val base = meta
+        if (base == null || merged.isEmpty()) {
+            throw YoutubeException(
+                "所有 YouTube 客户端都无法解析：\n" + attempts.joinToString("\n"),
+            )
+        }
+        // Best quality first, which `sortedVariants` already does via sortKey.
+        base.copy(videos = merged.values.toList())
     }
 
     /** Runs one player call and turns its response into [TweetMedia]. */
@@ -123,7 +146,8 @@ class YoutubeExtractor(private val settingsStore: XThiefSettingsStore) {
 
         val variants = mutableListOf<VideoVariant>()
 
-        // Progressive MP4s: video and audio in one file, so nothing has to be muxed.
+        // Progressive MP4s: video and audio in one file, so nothing has to be muxed. These are
+        // usually capped at 360p, but they are a useful fallback.
         streaming.optJSONArray("formats")?.let { formats ->
             for (index in 0 until formats.length()) {
                 val format = formats.optJSONObject(index) ?: continue
@@ -140,32 +164,34 @@ class YoutubeExtractor(private val settingsStore: XThiefSettingsStore) {
             }
         }
 
-        // Adaptive fallback: pick the best video track and pair it with the best audio track.
-        if (variants.isEmpty()) {
-            val adaptive = streaming.optJSONArray("adaptiveFormats")
-            val bestAudio = adaptive?.let { array ->
-                (0 until array.length())
-                    .mapNotNull { array.optJSONObject(it) }
-                    .filter { it.optString("mimeType").startsWith("audio/") }
-                    .maxByOrNull { it.optLong("bitrate", 0L) }
-                    ?.optString("url")
-                    ?.takeIf { it.isNotBlank() }
-            }
-            adaptive?.let { array ->
-                for (index in 0 until array.length()) {
-                    val format = array.optJSONObject(index) ?: continue
-                    val mime = format.optString("mimeType")
-                    if (!mime.startsWith("video/")) continue
-                    val url = format.optString("url").takeIf { it.isNotBlank() } ?: continue
-                    variants += VideoVariant(
-                        url = url,
-                        bitrate = (format.optLong("bitrate", 0L) / 1000L).toInt(),
-                        contentType = mime.substringBefore(';'),
-                        width = format.optInt("width"),
-                        height = format.optInt("height"),
-                        audioUrl = bestAudio,
-                    )
-                }
+        // Adaptive renditions carry the real quality (up to 4K) but no audio, so each one is paired
+        // with the best audio track. Collected unconditionally: with `formats` present these used to
+        // be skipped, which capped every YouTube download at 360p.
+        val adaptive = streaming.optJSONArray("adaptiveFormats")
+        if (adaptive != null) {
+            val bestAudio = (0 until adaptive.length())
+                .mapNotNull { adaptive.optJSONObject(it) }
+                .filter { it.optString("mimeType").startsWith("audio/") }
+                .filter { it.optString("url").isNotBlank() }
+                .maxByOrNull { it.optLong("bitrate", 0L) }
+                ?.optString("url")
+                ?.takeIf { it.isNotBlank() }
+
+            for (index in 0 until adaptive.length()) {
+                val format = adaptive.optJSONObject(index) ?: continue
+                val mime = format.optString("mimeType")
+                if (!mime.startsWith("video/")) continue
+                // Only usable when the response carries a direct URL; some clients return formats
+                // that would need `signatureCipher` descrambling, which needs a JS engine.
+                val url = format.optString("url").takeIf { it.isNotBlank() } ?: continue
+                variants += VideoVariant(
+                    url = url,
+                    bitrate = (format.optLong("bitrate", 0L) / 1000L).toInt(),
+                    contentType = mime.substringBefore(';'),
+                    width = format.optInt("width"),
+                    height = format.optInt("height"),
+                    audioUrl = bestAudio,
+                )
             }
         }
 
