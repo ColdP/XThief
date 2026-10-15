@@ -111,41 +111,12 @@ fun AppPage(
                     LocalToolbarCollapsed provides collapsedFraction,
                 ) {
                     Box {
-                        // HyperChanger's top-bar material: pages that provide their own
-                        // background use the progressive-blur mask, plain pages use a regular
-                        // backdrop blur plus a tinted surface that fades as the bar collapses.
-                        if (background == null) {
-                            Box(
-                                Modifier
-                                    .matchParentSize()
-                                    .graphicsLayer { alpha = 1f - topBarMaterialProgress }
-                                    .drawPlainBackdrop(
-                                        backdrop = backdrop,
-                                        shape = { RectangleShape },
-                                        effects = { blur(6.dp.toPx()) },
-                                        onDrawSurface = { drawRect(surface.copy(alpha = 0.55f)) },
-                                    ),
-                            )
-                        }
-                        Box(
-                            Modifier
-                                .matchParentSize()
-                                .expandDrawHeight(TOP_BAR_MATERIAL_HEIGHT_FACTOR)
-                                .graphicsLayer { alpha = topBarMaterialProgress }
-                                .drawPlainBackdrop(
-                                    backdrop = backdrop,
-                                    shape = { RectangleShape },
-                                    effects = {
-                                        blur(10.dp.toPx())
-                                        runtimeShaderEffect(
-                                            key = "progressive-blur-alpha-mask",
-                                            shaderString = PROGRESSIVE_BLUR_ALPHA_MASK_SHADER,
-                                            uniformShaderName = "content",
-                                        ) { setFloatUniform("size", size.width, size.height) }
-                                    },
-                                ),
+                        TopBarMaterial(
+                            backdrop = backdrop,
+                            surface = surface,
+                            progress = topBarMaterialProgress,
+                            tintedWhenExpanded = background == null,
                         )
-                        CollapsedTopBarGradientLayer(surface, topBarMaterialProgress)
                         if (showLargeTitle) {
                             TopAppBar(
                                 title = "",
@@ -275,6 +246,57 @@ fun PageAction(
         description = description,
         onClick = onClick,
     )
+}
+
+/**
+ * HyperChanger's top-bar material, shared by every page (and the built-in player).
+ *
+ * Two layers cross-fade as the bar collapses: a tinted blur while expanded, and a progressive-blur
+ * mask once collapsed, with the gradient layer on top in both states.
+ *
+ * @param progress 0 = fully expanded, 1 = fully collapsed.
+ * @param tintedWhenExpanded pages that draw their own background rely on the progressive blur
+ *   alone, so the tinted layer is skipped for them.
+ */
+@Composable
+internal fun BoxScope.TopBarMaterial(
+    backdrop: LayerBackdrop,
+    surface: Color,
+    progress: Float,
+    tintedWhenExpanded: Boolean,
+) {
+    if (tintedWhenExpanded) {
+        Box(
+            Modifier
+                .matchParentSize()
+                .graphicsLayer { alpha = 1f - progress }
+                .drawPlainBackdrop(
+                    backdrop = backdrop,
+                    shape = { RectangleShape },
+                    effects = { blur(6.dp.toPx()) },
+                    onDrawSurface = { drawRect(surface.copy(alpha = 0.55f)) },
+                ),
+        )
+    }
+    Box(
+        Modifier
+            .matchParentSize()
+            .expandDrawHeight(TOP_BAR_MATERIAL_HEIGHT_FACTOR)
+            .graphicsLayer { alpha = progress }
+            .drawPlainBackdrop(
+                backdrop = backdrop,
+                shape = { RectangleShape },
+                effects = {
+                    blur(10.dp.toPx())
+                    runtimeShaderEffect(
+                        key = "progressive-blur-alpha-mask",
+                        shaderString = PROGRESSIVE_BLUR_ALPHA_MASK_SHADER,
+                        uniformShaderName = "content",
+                    ) { setFloatUniform("size", size.width, size.height) }
+                },
+            ),
+    )
+    CollapsedTopBarGradientLayer(surface, progress)
 }
 
 @Composable

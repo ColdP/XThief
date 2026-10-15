@@ -22,6 +22,7 @@ import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -29,8 +30,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -43,33 +46,28 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import com.kyant.backdrop.backdrops.LayerBackdrop
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
-import com.kyant.backdrop.drawBackdrop
-import com.kyant.backdrop.effects.blur
-import com.kyant.backdrop.effects.vibrancy
-import com.kyant.backdrop.highlight.Highlight
-import com.kyant.backdrop.shadow.Shadow
 import kotlinx.coroutines.delay
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.LinearProgressIndicator
+import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.ProgressIndicatorDefaults
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.icon.MiuixIcons
-import top.yukonga.miuix.kmp.icon.extended.Back
+import top.yukonga.miuix.kmp.icon.extended.ChevronBackward
 import top.yukonga.miuix.kmp.icon.extended.Delete
 import top.yukonga.miuix.kmp.icon.extended.Favorites
 import top.yukonga.miuix.kmp.icon.extended.FavoritesFill
@@ -80,8 +78,10 @@ import top.yukonga.miuix.kmp.icon.extended.Play
 import top.yukonga.miuix.kmp.icon.extended.VolumeOff
 import top.yukonga.miuix.kmp.icon.extended.VolumeUp
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import btm.m.xthief.ui.TopBarMaterial
 import btm.m.xthief.ui.components.GlassFloatingToolbar
 import btm.m.xthief.ui.components.GlassToolbarIconButton
+import btm.m.xthief.ui.components.LocalPageBackdrop
 
 /** What the player is showing. */
 data class PlayerSource(
@@ -92,17 +92,26 @@ data class PlayerSource(
     val mediaFileName: String? = null,
 )
 
-private val TOP_BAR_HEIGHT = 56.dp
-private val TOP_SCRIM_HEIGHT = 136.dp
-private val TOP_BLUR = 26.dp
-private val CARD_SHAPE = RoundedCornerShape(22.5.dp)
+/**
+ * Width and height of the floating bottom navigation bar, reused verbatim so the player's bars line
+ * up with the app's navigation instead of being sized by eye.
+ */
+private const val NAV_WIDTH_FRACTION = (0.53f * 0.82f * 1.10f) * 2f
+private val NAV_HEIGHT = 64.dp
+
+/** Transport capsule: 87% of the previous height, per review. */
+private val CARD_HEIGHT = 56.dp
+private val CARD_SCRUB_HEIGHT = 80.dp
+
+/** Icon and label metrics taken from the navigation bar's own tab content. */
+private val NAV_ICON_SIZE = 28.dp
+private val NAV_LABEL_SIZE = 10.5.sp
 
 /**
  * The built-in player.
  *
- * The surface is a [TextureView] rather than a SurfaceView on purpose: a SurfaceView lives in its
- * own compositor layer, so the page backdrop used by the glass bars could not sample the video
- * drawn underneath them.
+ * The surface is a [TextureView] rather than a SurfaceView: a SurfaceView has its own compositor
+ * layer, so the page backdrop could not sample the video drawn behind the glass bars.
  */
 @Composable
 fun PlayerScreen(
@@ -116,9 +125,11 @@ fun PlayerScreen(
 ) {
     val context = LocalContext.current
     val backdrop = rememberLayerBackdrop()
+    val scroll = MiuixScrollBehavior()
+    val surface = MiuixTheme.colorScheme.surface
 
     var player by remember { mutableStateOf<MediaPlayer?>(null) }
-    var surface by remember { mutableStateOf<Surface?>(null) }
+    var drawSurface by remember { mutableStateOf<Surface?>(null) }
     var isPlaying by remember { mutableStateOf(false) }
     var isMuted by remember { mutableStateOf(false) }
     var isScrubbing by remember { mutableStateOf(false) }
@@ -150,14 +161,13 @@ fun PlayerScreen(
         onDispose {
             runCatching { media.release() }
             player = null
-            surface = null
+            drawSurface = null
         }
     }
 
-    // Attach the drawing surface once both the player and the TextureView are ready.
-    LaunchedEffect(player, surface) {
+    LaunchedEffect(player, drawSurface) {
         val media = player ?: return@LaunchedEffect
-        val target = surface ?: return@LaunchedEffect
+        val target = drawSurface ?: return@LaunchedEffect
         runCatching { media.setSurface(target) }
     }
 
@@ -170,7 +180,10 @@ fun PlayerScreen(
     }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        // The video is recorded exactly once here; the glass bars below sample this backdrop.
+        // Publish this page's backdrop so the shared glass components (GlassFloatingToolbar,
+        // GlassToolbarIconButton) sample the video instead of falling back to a flat tint.
+        CompositionLocalProvider(LocalPageBackdrop provides backdrop) {
+        // Recorded once here; the glass bars below sample this backdrop.
         Box(Modifier.fillMaxSize().layerBackdrop(backdrop)) {
             AndroidView(
                 factory = { ctx ->
@@ -181,7 +194,7 @@ fun PlayerScreen(
                                 width: Int,
                                 height: Int,
                             ) {
-                                surface = Surface(texture)
+                                drawSurface = Surface(texture)
                             }
 
                             override fun onSurfaceTextureSizeChanged(
@@ -193,7 +206,7 @@ fun PlayerScreen(
                             override fun onSurfaceTextureDestroyed(
                                 texture: SurfaceTexture,
                             ): Boolean {
-                                surface = null
+                                drawSurface = null
                                 return true
                             }
 
@@ -213,7 +226,7 @@ fun PlayerScreen(
         }
 
         // Gestures: tap toggles the chrome, double tap plays/pauses, long press runs at 2x, a
-        // horizontal drag scrubs, and a pinch zooms (panning only once zoomed in).
+        // horizontal drag scrubs and a pinch zooms (panning only once zoomed in).
         Box(
             Modifier
                 .fillMaxSize()
@@ -224,7 +237,6 @@ fun PlayerScreen(
                         onLongPress = { applySpeed(player, 2f) },
                         onPress = {
                             tryAwaitRelease()
-                            // Restore normal speed whether or not the long press fired.
                             player?.let {
                                 if (it.playbackParams.speed != 1f) applySpeed(player, 1f)
                             }
@@ -260,15 +272,34 @@ fun PlayerScreen(
         )
 
         if (controlsVisible) {
-            PlayerTopBar(
-                backdrop = backdrop,
-                title = source.title,
-                subtitle = source.subtitle,
-                onBack = onBack,
-                modifier = Modifier.align(Alignment.TopCenter),
-            )
+            // Reuses the shared top-bar material. progress = 1 keeps it collapsed by default, so it
+            // shows the progressive blur and liquid-glass buttons straight away.
+            Box(Modifier.align(Alignment.TopCenter).fillMaxWidth()) {
+                TopBarMaterial(
+                    backdrop = backdrop,
+                    surface = surface,
+                    progress = 1f,
+                    tintedWhenExpanded = false,
+                )
+                TopAppBar(
+                    title = source.title,
+                    subtitle = source.subtitle,
+                    color = Color.Transparent,
+                    scrollBehavior = scroll,
+                    navigationIcon = {
+                        GlassToolbarIconButton(
+                            icon = MiuixIcons.Regular.ChevronBackward,
+                            description = "返回",
+                            backdrop = backdrop,
+                            collapsedFraction = 1f,
+                            containerPadding = PaddingValues(start = 8.dp),
+                            onClick = onBack,
+                        )
+                    },
+                )
+            }
+
             PlayerBottomBars(
-                backdrop = backdrop,
                 isPlaying = isPlaying,
                 isMuted = isMuted,
                 favorite = favorite,
@@ -288,6 +319,7 @@ fun PlayerScreen(
                 onDelete = onDelete,
                 modifier = Modifier.align(Alignment.BottomCenter),
             )
+        }
         }
     }
 }
@@ -310,75 +342,12 @@ private fun applySpeed(player: MediaPlayer?, value: Float) {
     runCatching { media.playbackParams = media.playbackParams.setSpeed(value) }
 }
 
-/** Collapsed MIUIX title bar: a gradient blur scrim with liquid-glass actions floating on it. */
-@Composable
-private fun PlayerTopBar(
-    backdrop: LayerBackdrop,
-    title: String,
-    subtitle: String,
-    onBack: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Box(modifier.fillMaxWidth().height(TOP_SCRIM_HEIGHT)) {
-        Box(
-            Modifier
-                .fillMaxSize()
-                .drawBackdrop(
-                    backdrop = backdrop,
-                    shape = { RectangleShape },
-                    effects = { blur(TOP_BLUR.toPx()) },
-                    highlight = null,
-                    shadow = null,
-                    innerShadow = null,
-                    onDrawSurface = {
-                        drawRect(
-                            Brush.verticalGradient(
-                                0f to Color.Black.copy(alpha = .58f),
-                                0.55f to Color.Black.copy(alpha = .22f),
-                                1f to Color.Transparent,
-                            ),
-                        )
-                    },
-                ),
-        )
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .height(TOP_BAR_HEIGHT)
-                .padding(horizontal = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            GlassToolbarIconButton(
-                icon = MiuixIcons.Regular.Back,
-                description = "返回",
-                onClick = onBack,
-            )
-            Column(Modifier.padding(start = 6.dp)) {
-                Text(
-                    text = title,
-                    color = Color.White,
-                    style = MiuixTheme.textStyles.title4,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                if (subtitle.isNotBlank()) {
-                    Text(
-                        text = subtitle,
-                        color = Color.White.copy(alpha = .78f),
-                        style = MiuixTheme.textStyles.footnote2,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-        }
-    }
-}
-
-/** The floating transport capsule plus the actions toolbar beneath it. */
+/**
+ * The transport capsule and the actions toolbar. Both are the project's [GlassFloatingToolbar], so
+ * their material and capsule shape are identical; only their height and content differ.
+ */
 @Composable
 private fun PlayerBottomBars(
-    backdrop: LayerBackdrop,
     isPlaying: Boolean,
     isMuted: Boolean,
     favorite: Boolean,
@@ -397,45 +366,26 @@ private fun PlayerBottomBars(
         modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 28.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        // The time labels extend the capsule while scrubbing, hence the animated height.
         val cardHeight by animateDpAsState(
-            targetValue = if (scrubbing) 92.dp else 64.dp,
+            targetValue = if (scrubbing) CARD_SCRUB_HEIGHT else CARD_HEIGHT,
             animationSpec = tween(220),
             label = "playerCardHeight",
         )
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(cardHeight)
-                .clip(CARD_SHAPE)
-                .drawBackdrop(
-                    backdrop = backdrop,
-                    shape = { CARD_SHAPE },
-                    effects = {
-                        vibrancy()
-                        blur(8.dp.toPx())
-                    },
-                    highlight = { Highlight.Default.copy(alpha = .55f) },
-                    shadow = {
-                        Shadow.Default.copy(radius = 14.dp, color = Color.Black, alpha = .40f)
-                    },
-                    innerShadow = null,
-                    onDrawSurface = { drawRect(Color.Black.copy(alpha = .34f)) },
-                ),
-            contentAlignment = Alignment.Center,
+        GlassFloatingToolbar(
+            modifier = Modifier.fillMaxWidth(NAV_WIDTH_FRACTION).height(cardHeight),
         ) {
             Row(
-                Modifier.fillMaxWidth().padding(horizontal = 10.dp),
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 IconButton(onClick = onTogglePlay) {
                     Icon(
                         if (isPlaying) MiuixIcons.Regular.Pause else MiuixIcons.Regular.Play,
                         if (isPlaying) "暂停" else "播放",
-                        Modifier.size(28.dp),
-                        tint = Color.White,
+                        Modifier.size(NAV_ICON_SIZE),
                     )
                 }
                 // Elapsed time, right-aligned against the start of the bar; scrubbing only.
@@ -446,7 +396,6 @@ private fun PlayerBottomBars(
                 ) {
                     Text(
                         text = formatTime(positionMs),
-                        color = Color.White,
                         style = MiuixTheme.textStyles.footnote2,
                         textAlign = TextAlign.End,
                         modifier = Modifier.padding(end = 8.dp),
@@ -460,10 +409,10 @@ private fun PlayerBottomBars(
                             0f
                         },
                         colors = ProgressIndicatorDefaults.progressIndicatorColors(
-                            // Foreground white on a translucent track, per the player spec.
                             Color.White,
-                            Color.White.copy(alpha = .30f),
+                            Color.White.copy(alpha = .45f),
                         ),
+                        height = 6.dp,
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
@@ -474,7 +423,6 @@ private fun PlayerBottomBars(
                 ) {
                     Text(
                         text = formatTime(durationMs),
-                        color = Color.White,
                         style = MiuixTheme.textStyles.footnote2,
                         modifier = Modifier.padding(start = 8.dp),
                     )
@@ -487,17 +435,18 @@ private fun PlayerBottomBars(
                             MiuixIcons.Regular.VolumeUp
                         },
                         if (isMuted) "取消静音" else "静音",
-                        Modifier.size(28.dp),
-                        tint = Color.White,
+                        Modifier.size(NAV_ICON_SIZE),
                     )
                 }
             }
         }
 
-        // Same capsule material and height as the home floating navigation bar.
-        GlassFloatingToolbar {
+        // Same width, height, icon size and label metrics as the floating navigation bar.
+        GlassFloatingToolbar(
+            modifier = Modifier.fillMaxWidth(NAV_WIDTH_FRACTION).height(NAV_HEIGHT),
+        ) {
             Row(
-                Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp),
+                Modifier.fillMaxWidth().padding(horizontal = 4.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -518,7 +467,7 @@ private fun PlayerBottomBars(
     }
 }
 
-/** Icon above label, matching the bottom navigation's rhythm. */
+/** Icon above label, at the floating navigation bar's metrics. */
 @Composable
 private fun PlayerToolbarItem(
     icon: ImageVector,
@@ -527,17 +476,17 @@ private fun PlayerToolbarItem(
 ) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.CenterVertically),
         modifier = Modifier
-            .clip(RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(50.dp))
             .pointerInput(Unit) { detectTapGestures(onTap = { onClick() }) }
-            .padding(horizontal = 10.dp, vertical = 4.dp),
+            .padding(horizontal = 6.dp, vertical = 2.dp),
     ) {
-        Icon(icon, label, Modifier.size(24.dp), tint = Color.White)
-        Spacer(Modifier.height(2.dp))
+        Icon(icon, label, Modifier.size(NAV_ICON_SIZE))
         Text(
             text = label,
-            color = Color.White,
-            style = MiuixTheme.textStyles.footnote2,
+            fontSize = NAV_LABEL_SIZE,
+            fontWeight = FontWeight.Medium,
         )
     }
 }

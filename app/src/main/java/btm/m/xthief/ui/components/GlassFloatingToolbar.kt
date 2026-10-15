@@ -31,6 +31,7 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
  */
 @Composable
 fun GlassFloatingToolbar(
+    modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
 ) {
     // Scaffold's floatingToolbar slot sits outside the topBar's LocalToolbarBackdrop provider,
@@ -79,7 +80,8 @@ fun GlassFloatingToolbar(
         Modifier.clip(shape).background(tint)
     }
     FloatingToolbar(
-        modifier = glassModifier
+        modifier = modifier
+            .then(glassModifier)
             .then(touchHighlight.gestureModifier)
             .then(touchHighlight.modifier),
         color = Color.Transparent,
