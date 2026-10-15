@@ -452,23 +452,23 @@ fun PlayerScreen(
         }
     }
 
-    PlayerInfoDialog(
-        show = showInfo,
-        title = source.title,
-        uri = source.uri,
-        colorSpace = colorSpaceLabel,
-        onDismiss = { showInfo = false },
-    )
+    // Publish this page's backdrop so every shared glass component — the bars, the top app bar and
+    // the dialogs — samples the video. Both keys are provided here, and the info sheet is rendered
+    // *inside* this provider: providing a key only affects the subtree below it, and the sheet used
+    // to sit outside, which is why it sampled the page behind the player.
+    CompositionLocalProvider(
+        LocalPageBackdrop provides backdrop,
+        LocalDialogBackdrop provides backdrop,
+    ) {
+        PlayerInfoDialog(
+            show = showInfo,
+            title = source.title,
+            uri = source.uri,
+            colorSpace = colorSpaceLabel,
+            onDismiss = { showInfo = false },
+        )
 
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
-        // Publish this page's backdrop so the shared glass components (GlassFloatingToolbar,
-        // GlassToolbarIconButton) sample the video instead of falling back to a flat tint.
-        // LocalDialogBackdrop is overridden too: the app root points it at the page behind the
-        // player, which made the info sheet sample the library rather than the video.
-        CompositionLocalProvider(
-            LocalPageBackdrop provides backdrop,
-            LocalDialogBackdrop provides backdrop,
-        ) {
+        Box(Modifier.fillMaxSize().background(Color.Black)) {
             // Recorded once here; the glass bars above sample this backdrop. The picture follows
             // the finger during a short-video swipe, while the chrome stays put.
             Box(
