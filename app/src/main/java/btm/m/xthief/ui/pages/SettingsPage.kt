@@ -305,12 +305,6 @@ fun SettingsPage(
                     title = "短视频模式",
                     summary = "播放页上下滑动切换视频",
                 )
-                SwitchPreference(
-                    checked = settings.hdrPlayback,
-                    onCheckedChange = { value -> update { it.copy(hdrPlayback = value) } },
-                    title = "HDR 播放",
-                    summary = "HDR 视频走独立图层播放；关闭可保留播放页的玻璃折射效果",
-                )
                 EditableSliderPreference(
                     value = settings.keepHistoryDays.toFloat(),
                     onValueChange = { value -> update { it.copy(keepHistoryDays = value.toInt()) } },

@@ -15,13 +15,8 @@ import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaPlayer
 import android.net.Uri
-import android.os.Handler
-import android.os.Looper
 import android.provider.MediaStore
-import android.view.PixelCopy
 import android.view.Surface
-import android.view.SurfaceHolder
-import android.view.SurfaceView
 import android.view.TextureView
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
@@ -74,9 +69,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.RectangleShape
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -108,8 +101,6 @@ import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.HorizontalDivider
 import top.yukonga.miuix.kmp.basic.Icon
@@ -199,15 +190,6 @@ private const val SWIPE_ANIM_MS = 240
 /** How close the player must get to a requested position before polling resumes from it. */
 private const val SEEK_SETTLE_MS = 1_200L
 
-/** How much the captured frame is downscaled before it is used as a blur source. */
-private const val SNAPSHOT_DIVISOR = 4
-
-/** How often a fresh frame is captured; it only feeds a blur, so this can be slow. */
-private const val SNAPSHOT_INTERVAL_MS = 400L
-
-/** Upper bound on waiting for a PixelCopy, so a stalled copy cannot wedge the sampler. */
-private const val SNAPSHOT_TIMEOUT_MS = 400L
-
 /** The app's brand accent, used for the primary action in the info sheet. */
 private val BrandBlue = Color(0xFF0088FF)
 
@@ -278,8 +260,6 @@ fun PlayerScreen(
     favorite: Boolean,
     /** When true, a vertical swipe moves to the previous/next clip. */
     shortVideoMode: Boolean = false,
-    /** When false, HDR clips are played through the TextureView so the glass bars keep sampling. */
-    hdrEnabled: Boolean = true,
     /** -1 = previous clip, +1 = next clip. */
     onSwitchVideo: (Int) -> Unit = {},
     onToggleFavorite: () -> Unit,
@@ -307,19 +287,8 @@ fun PlayerScreen(
     var scrubMs by remember { mutableLongStateOf(0L) }
     var videoWidth by remember { mutableIntStateOf(0) }
     var videoHeight by remember { mutableIntStateOf(0) }
-    /** HDR clips need a SurfaceView, which the glass bars cannot sample. */
-    var isHdr by remember(source.uri) { mutableStateOf(false) }
-    // Only take the SurfaceView path when the user has left HDR playback enabled.
-    val useSurfaceView = isHdr && hdrEnabled
-    var surfaceViewRef by remember { mutableStateOf<SurfaceView?>(null) }
-    /** Frame captured from the SurfaceView, standing in for the un-samplable backdrop. */
-    var snapshot by remember(source.uri) { mutableStateOf<ImageBitmap?>(null) }
-    /** Fills the incoming frame's shape until the clip reports its real size. */
-    val videoAspectModifier = if (videoWidth > 0 && videoHeight > 0) {
-        Modifier.aspectRatio(videoWidth.toFloat() / videoHeight)
-    } else {
-        Modifier.fillMaxSize()
-    }
+    /** Shown in the info sheet, e.g. "HDR (Rec.2020)"; playback itself passes through the GPU. */
+    var colorSpaceLabel by remember(source.uri) { mutableStateOf<String?>(null) }
     /** Position a seek is heading to; -1 when idle. Keeps the poll from undoing the seek. */
     var pendingSeekMs by remember { mutableLongStateOf(-1L) }
     /** Measured size of the video surface, so the letterbox follows rotation. */
@@ -434,36 +403,10 @@ fun PlayerScreen(
         runCatching { media.setSurface(target) }
     }
 
-    // Probe the clip once; the result picks the surface type and the letterbox strategy.
+    // Probe the clip once, purely to report its colour space in the info sheet.
     LaunchedEffect(source.uri) {
-        isHdr = withContext(Dispatchers.IO) {
-            isHdrVideo(context, Uri.parse(source.uri))
-        }
-    }
-
-    LaunchedEffect(player, useSurfaceView) {
-        if (useSurfaceView) {
-            // A SurfaceView exposes no transform, so the player has to fit the frame itself.
-            runCatching {
-                player?.setVideoScalingMode(MediaPlayer.VIDEO_SCALING_MODE_SCALE_TO_FIT)
-            }
-        }
-    }
-
-    // Keep a recent frame of the HDR picture available for the glass bars. Sampled slowly on
-    // purpose: it only feeds a blur, so a few frames a second is indistinguishable.
-    LaunchedEffect(useSurfaceView, isPlaying, source.uri) {
-        if (!useSurfaceView) {
-            snapshot = null
-            return@LaunchedEffect
-        }
-        while (true) {
-            val view = surfaceViewRef
-            if (isPlaying && view != null && view.width > 0 && view.height > 0) {
-                val frame = withContext(Dispatchers.IO) { captureSurface(view) }
-                if (frame != null) snapshot = frame.asImageBitmap()
-            }
-            delay(SNAPSHOT_INTERVAL_MS)
+        colorSpaceLabel = withContext(Dispatchers.IO) {
+            readVideoColorInfo(context, Uri.parse(source.uri)).label
         }
     }
 
@@ -512,6 +455,7 @@ fun PlayerScreen(
         show = showInfo,
         title = source.title,
         uri = source.uri,
+        colorSpace = colorSpaceLabel,
         onDismiss = { showInfo = false },
     )
 
@@ -528,129 +472,83 @@ fun PlayerScreen(
                     .layerBackdrop(backdrop),
                 contentAlignment = Alignment.Center,
             ) {
-                // HDR clips get a SurfaceView so the layer reaches the display untouched; SDR
-                // clips keep the TextureView so the glass bars can still sample the picture.
-                // `key` forces the host view to be rebuilt when the kind changes.
-                key(useSurfaceView) {
-                    if (useSurfaceView) {
-                        AndroidView(
-                            factory = { ctx ->
-                                SurfaceView(ctx).apply {
-                                    surfaceViewRef = this
-                                    holder.addCallback(object : SurfaceHolder.Callback {
-                                        override fun surfaceCreated(holder: SurfaceHolder) {
-                                            drawSurface = holder.surface
-                                        }
+                // Everything plays through a TextureView, HDR included. GPU compositing tone-maps
+                // HDR to SDR, which costs the extended range but keeps the picture inside the
+                // RenderNode recorded for the backdrop — so the glass bars sample it — and it
+                // supports setTransform, so letterboxing works. A SurfaceView would preserve HDR
+                // but sit in its own layer: no sampling, and no way to fit the frame.
+                AndroidView(
+                    factory = { ctx ->
+                        TextureView(ctx).apply {
+                            textureView = this
+                            surfaceTextureListener =
+                                object : TextureView.SurfaceTextureListener {
+                                    override fun onSurfaceTextureAvailable(
+                                        texture: SurfaceTexture,
+                                        width: Int,
+                                        height: Int,
+                                    ) {
+                                        drawSurface = Surface(texture)
+                                    }
 
-                                        override fun surfaceChanged(
-                                            holder: SurfaceHolder,
-                                            format: Int,
-                                            width: Int,
-                                            height: Int,
-                                        ) = Unit
+                                    override fun onSurfaceTextureSizeChanged(
+                                        texture: SurfaceTexture,
+                                        width: Int,
+                                        height: Int,
+                                    ) = Unit
 
-                                        override fun surfaceDestroyed(holder: SurfaceHolder) {
-                                            drawSurface = null
-                                        }
-                                    })
-                                }
-                            },
-                            update = { surfaceView ->
-                                // The letterbox comes from the view's own size (see the modifier),
-                                // and SCALE_TO_FIT keeps the frame from being cropped to it.
-                                runCatching {
-                                    player?.setVideoScalingMode(
-                                        MediaPlayer.VIDEO_SCALING_MODE_SCALE_TO_FIT,
-                                    )
-                                }
-                            },
-                            modifier = Modifier
-                                // Sized to the clip's aspect ratio and centred, so black bars are
-                                // the surrounding Box rather than a stretched picture.
-                                .then(videoAspectModifier)
-                                .onSizeChanged { viewSize = it }
-                                .graphicsLayer {
-                                    scaleX = scale
-                                    scaleY = scale
-                                    translationX = offset.x
-                                    translationY = offset.y
-                                },
-                        )
-                    } else {
-                        AndroidView(
-                            factory = { ctx ->
-                                TextureView(ctx).apply {
-                                    textureView = this
-                                    surfaceTextureListener =
-                                        object : TextureView.SurfaceTextureListener {
-                                            override fun onSurfaceTextureAvailable(
-                                                texture: SurfaceTexture,
-                                                width: Int,
-                                                height: Int,
-                                            ) {
-                                                drawSurface = Surface(texture)
-                                            }
+                                    override fun onSurfaceTextureDestroyed(
+                                        texture: SurfaceTexture,
+                                    ): Boolean {
+                                        drawSurface = null
+                                        return true
+                                    }
 
-                                            override fun onSurfaceTextureSizeChanged(
-                                                texture: SurfaceTexture,
-                                                width: Int,
-                                                height: Int,
-                                            ) = Unit
-
-                                            override fun onSurfaceTextureDestroyed(
-                                                texture: SurfaceTexture,
-                                            ): Boolean {
-                                                drawSurface = null
-                                                return true
-                                            }
-
-                                            override fun onSurfaceTextureUpdated(
-                                                texture: SurfaceTexture,
-                                            ) = Unit
-                                        }
+                                    override fun onSurfaceTextureUpdated(
+                                        texture: SurfaceTexture,
+                                    ) = Unit
                                 }
-                            },
-                            update = { textureView ->
-                                // Reading the measured size here makes the letterbox recompute when
-                                // the screen rotates, not just when the video's own size arrives.
-                                val bounds = viewSize
-                                val vw = videoWidth
-                                val vh = videoHeight
-                                if (vw <= 0 || vh <= 0 || bounds.width <= 0 || bounds.height <= 0) {
-                                    return@AndroidView
-                                }
-                                val viewRatio = bounds.width.toFloat() / bounds.height
-                                val videoRatio = vw.toFloat() / vh
-                                val matrix = Matrix()
-                                if (videoRatio > viewRatio) {
-                                    matrix.setScale(
-                                        1f,
-                                        viewRatio / videoRatio,
-                                        bounds.width / 2f,
-                                        bounds.height / 2f,
-                                    )
-                                } else {
-                                    matrix.setScale(
-                                        videoRatio / viewRatio,
-                                        1f,
-                                        bounds.width / 2f,
-                                        bounds.height / 2f,
-                                    )
-                                }
-                                textureView.setTransform(matrix)
-                            },
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .onSizeChanged { viewSize = it }
-                                .graphicsLayer {
-                                    scaleX = scale
-                                    scaleY = scale
-                                    translationX = offset.x
-                                    translationY = offset.y
-                                },
-                        )
-                    }
-                }
+                        }
+                    },
+                    update = { view ->
+                        // Reading the measured size here makes the letterbox recompute when the
+                        // screen rotates, not just when the video's own size arrives.
+                        val bounds = viewSize
+                        val vw = videoWidth
+                        val vh = videoHeight
+                        if (vw <= 0 || vh <= 0 || bounds.width <= 0 || bounds.height <= 0) {
+                            return@AndroidView
+                        }
+                        val viewRatio = bounds.width.toFloat() / bounds.height
+                        val videoRatio = vw.toFloat() / vh
+                        val matrix = Matrix()
+                        if (videoRatio > viewRatio) {
+                            matrix.setScale(
+                                1f,
+                                viewRatio / videoRatio,
+                                bounds.width / 2f,
+                                bounds.height / 2f,
+                            )
+                        } else {
+                            matrix.setScale(
+                                videoRatio / viewRatio,
+                                1f,
+                                bounds.width / 2f,
+                                bounds.height / 2f,
+                            )
+                        }
+                        view.setTransform(matrix)
+                    },
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .onSizeChanged { viewSize = it }
+                        .graphicsLayer {
+                            scaleX = scale
+                            scaleY = scale
+                            translationX = offset.x
+                            translationY = offset.y
+                        },
+                )
             }
 
             // Gestures on the video itself: tap toggles the chrome, double tap plays/pauses, long
@@ -758,7 +656,6 @@ fun PlayerScreen(
                             surfaceTint = glassTint,
                             shadowTint = Color.Black,
                             highlightAlpha = 0f,
-                            snapshot = snapshot,
                         ) {
                             Row(
                                 Modifier.fillMaxWidth().padding(start = 0.dp, end = 4.dp),
@@ -847,7 +744,6 @@ fun PlayerScreen(
                     highlightAlpha = 0f,
                     surfaceTint = glassTint,
                     contentColor = barInk,
-                    snapshot = snapshot,
                     onTogglePlay = { togglePlayback(player) { isPlaying = it } },
                     onToggleMute = {
                         val next = !isMuted
@@ -877,7 +773,6 @@ fun PlayerScreen(
                     highlightAlpha = 0f,
                     surfaceTint = glassTint,
                     contentColor = barInk,
-                    snapshot = snapshot,
                     onToggleFavorite = onToggleFavorite,
                     onOpenWith = onOpenWith,
                     onInfo = { showInfo = true },
@@ -932,7 +827,6 @@ private fun PlayerTransportCard(
     highlightAlpha: Float,
     surfaceTint: Color,
     contentColor: Color,
-    snapshot: ImageBitmap?,
     onTogglePlay: () -> Unit,
     onToggleMute: () -> Unit,
     onScrubStart: () -> Unit,
@@ -958,7 +852,6 @@ private fun PlayerTransportCard(
         cornerRadius = cardRadius,
         shadowTint = Color.Black,
         highlightAlpha = highlightAlpha,
-        snapshot = snapshot,
     ) {
         Column(
             Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 6.dp),
@@ -1057,7 +950,6 @@ private fun PlayerActionToolbar(
     highlightAlpha: Float,
     surfaceTint: Color,
     contentColor: Color,
-    snapshot: ImageBitmap?,
     onToggleFavorite: () -> Unit,
     onOpenWith: () -> Unit,
     onInfo: () -> Unit,
@@ -1069,7 +961,6 @@ private fun PlayerActionToolbar(
         surfaceTint = surfaceTint,
         shadowTint = Color.Black,
         highlightAlpha = highlightAlpha,
-        snapshot = snapshot,
     ) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 2.dp),
@@ -1179,15 +1070,21 @@ private fun PlayerToolbarItem(
     }
 }
 
+/** What the container says about a clip's colour handling. */
+private data class VideoColorInfo(
+    val isHdr: Boolean,
+    /** Human-readable label, e.g. "HDR (Rec.2020)". */
+    val label: String,
+)
+
 /**
- * True when the clip carries an HDR transfer curve (HDR10 / HLG).
+ * Reads the colour metadata once, serving both the surface decision and the info sheet.
  *
- * This decides which surface is used: a TextureView is composited through the GPU, which flattens
- * HDR to SDR, while a SurfaceView passes the layer straight to the display and keeps it. The
- * trade-off is that a SurfaceView sits in its own layer, so the glass bars can no longer sample the
- * picture behind them.
+ * TextureView is composited through the GPU, which flattens HDR to SDR, while a SurfaceView passes
+ * the layer straight to the display and keeps it. The trade-off is that a SurfaceView sits in its
+ * own layer, so the glass bars cannot sample the picture behind them.
  */
-private fun isHdrVideo(context: Context, uri: Uri): Boolean = runCatching {
+private fun readVideoColorInfo(context: Context, uri: Uri): VideoColorInfo = runCatching {
     val extractor = MediaExtractor()
     try {
         extractor.setDataSource(context, uri, null)
@@ -1195,46 +1092,49 @@ private fun isHdrVideo(context: Context, uri: Uri): Boolean = runCatching {
             val format = extractor.getTrackFormat(index)
             val mime = format.getString(MediaFormat.KEY_MIME).orEmpty()
             if (!mime.startsWith("video/")) continue
-            if (!format.containsKey(MediaFormat.KEY_COLOR_TRANSFER)) continue
-            val transfer = format.getInteger(MediaFormat.KEY_COLOR_TRANSFER)
-            if (
-                transfer == MediaFormat.COLOR_TRANSFER_ST2084 ||
-                transfer == MediaFormat.COLOR_TRANSFER_HLG
-            ) {
-                return@runCatching true
+            val transfer = if (format.containsKey(MediaFormat.KEY_COLOR_TRANSFER)) {
+                format.getInteger(MediaFormat.KEY_COLOR_TRANSFER)
+            } else {
+                COLOR_TRANSFER_UNSPECIFIED
             }
+            val standard = if (format.containsKey(MediaFormat.KEY_COLOR_STANDARD)) {
+                format.getInteger(MediaFormat.KEY_COLOR_STANDARD)
+            } else {
+                COLOR_STANDARD_UNSPECIFIED
+            }
+            val hdr = transfer == MediaFormat.COLOR_TRANSFER_ST2084 ||
+                transfer == MediaFormat.COLOR_TRANSFER_HLG
+            return@runCatching VideoColorInfo(hdr, colorLabel(transfer, standard))
         }
-        false
+        VideoColorInfo(isHdr = false, label = colorLabel(0, 0))
     } finally {
         runCatching { extractor.release() }
     }
-}.getOrDefault(false)
+}.getOrDefault(VideoColorInfo(isHdr = false, label = "未知"))
+
+/** Builds a label such as "HDR (Rec.2020)", "HLG (Rec.2020)" or "SDR (Rec.709)". */
+private fun colorLabel(transfer: Int, standard: Int): String {
+    val kind = when (transfer) {
+        MediaFormat.COLOR_TRANSFER_ST2084 -> "HDR"
+        MediaFormat.COLOR_TRANSFER_HLG -> "HLG"
+        COLOR_TRANSFER_UNSPECIFIED -> "未知"
+        else -> "SDR"
+    }
+    val primaries = when (standard) {
+        MediaFormat.COLOR_STANDARD_BT2020 -> "Rec.2020"
+        MediaFormat.COLOR_STANDARD_BT709 -> "Rec.709"
+        MediaFormat.COLOR_STANDARD_BT601_PAL,
+        MediaFormat.COLOR_STANDARD_BT601_NTSC -> "Rec.601"
+        else -> null
+    }
+    return if (primaries != null) "$kind ($primaries)" else kind
+}
 
 /**
- * Grabs the current frame out of a SurfaceView.
- *
- * A SurfaceView is composited in its own layer, so `layerBackdrop` cannot see it; PixelCopy reads
- * the layer directly and gives the glass bars something to blur.
+ * Values MediaFormat does not expose as constants in this SDK, per the platform documentation.
  */
-private fun captureSurface(view: SurfaceView): Bitmap? = runCatching {
-    val width = (view.width / SNAPSHOT_DIVISOR).coerceAtLeast(1)
-    val height = (view.height / SNAPSHOT_DIVISOR).coerceAtLeast(1)
-    val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-    val latch = CountDownLatch(1)
-    var copied = false
-    PixelCopy.request(
-        view,
-        bitmap,
-        { result ->
-            copied = result == PixelCopy.SUCCESS
-            latch.countDown()
-        },
-        Handler(Looper.getMainLooper()),
-    )
-    // Never block the sampler for long: a missed frame just keeps the previous snapshot.
-    latch.await(SNAPSHOT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-    if (copied) bitmap else null.also { bitmap.recycle() }
-}.getOrNull()
+private const val COLOR_TRANSFER_UNSPECIFIED = 0
+private const val COLOR_STANDARD_UNSPECIFIED = 0
 
 /** Everything the info panel shows about the file behind a clip. */
 private data class MediaFileInfo(
@@ -1292,6 +1192,7 @@ private fun PlayerInfoDialog(
     show: Boolean,
     title: String,
     uri: String,
+    colorSpace: String?,
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -1330,6 +1231,7 @@ private fun PlayerInfoDialog(
             InfoLine("时长", info?.let { formatTime(it.durationMs) } ?: "读取中…")
             InfoLine("大小", info?.let { fileSizeLabel(it.sizeBytes) } ?: "读取中…")
             InfoLine("修改时间", info?.let { dateLabel(it.modifiedAt) } ?: "读取中…")
+            InfoLine("色彩空间", colorSpace ?: "读取中…")
             Spacer(Modifier.height(10.dp))
             GlassDialogButton(
                 onClick = onDismiss,

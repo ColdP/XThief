@@ -103,8 +103,6 @@ data class XThiefSettings(
     val blurSensitiveCovers: Boolean = true,
     /** Full-screen, swipe-up/down-to-switch playback in the built-in player. */
     val shortVideoMode: Boolean = false,
-    /** Play HDR clips through a SurfaceView, losing the glass refraction in exchange for HDR. */
-    val hdrPlayback: Boolean = true,
 ) {
     val navStyle: NavigationStyle get() = NavigationStyle.fromPreference(navigationStyle)
     val navLabelMode: LabelMode get() = LabelMode.fromPreference(labelMode)
@@ -183,7 +181,6 @@ class XThiefSettingsStore(context: Context) {
         libraryViewMode = prefs.getString(KEY_LIBRARY_VIEW, null) ?: LIBRARY_VIEW_LIST,
         blurSensitiveCovers = prefs.getBoolean(KEY_BLUR_SENSITIVE, true),
         shortVideoMode = prefs.getBoolean(KEY_SHORT_VIDEO, false),
-        hdrPlayback = prefs.getBoolean(KEY_HDR_PLAYBACK, true),
     )
 
     private fun write(value: XThiefSettings) {
@@ -213,7 +210,6 @@ class XThiefSettingsStore(context: Context) {
             .putString(KEY_LIBRARY_VIEW, value.libraryViewMode)
             .putBoolean(KEY_BLUR_SENSITIVE, value.blurSensitiveCovers)
             .putBoolean(KEY_SHORT_VIDEO, value.shortVideoMode)
-            .putBoolean(KEY_HDR_PLAYBACK, value.hdrPlayback)
             .apply()
     }
 
@@ -256,7 +252,6 @@ private const val KEY_COOKIE_GUEST = "cookie_guest_id"
 private const val KEY_LIBRARY_VIEW = "library_view_mode"
 private const val KEY_BLUR_SENSITIVE = "blur_sensitive_covers"
 private const val KEY_SHORT_VIDEO = "short_video_mode"
-private const val KEY_HDR_PLAYBACK = "hdr_playback"
 
 /** Media library layouts. */
 const val LIBRARY_VIEW_LIST = "list"
