@@ -5,6 +5,8 @@ package btm.m.xthief.ui.pages
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.pm.ActivityInfo
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.graphics.SurfaceTexture
@@ -62,12 +64,15 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -97,6 +102,7 @@ import top.yukonga.miuix.kmp.icon.extended.Forward
 import top.yukonga.miuix.kmp.icon.extended.Info
 import top.yukonga.miuix.kmp.icon.extended.Pause
 import top.yukonga.miuix.kmp.icon.extended.Play
+import top.yukonga.miuix.kmp.icon.extended.RotateLeft
 import top.yukonga.miuix.kmp.icon.extended.Share
 import top.yukonga.miuix.kmp.icon.extended.VolumeOff
 import top.yukonga.miuix.kmp.icon.extended.VolumeUp
@@ -140,6 +146,9 @@ private val NAV_LABEL_SIZE = 10.5.sp
 
 /** Transport buttons are 80% of that icon size. */
 private val TRANSPORT_ICON_SIZE = NAV_ICON_SIZE * 0.8f
+
+/** The top bar's back button is 92% of the navigation icon size. */
+private val TOP_BAR_ICON_SIZE = NAV_ICON_SIZE * 0.92f
 
 /**
  * Light frosted scrim for the player's glass bars, used when no tint has been sampled yet.
@@ -230,6 +239,7 @@ fun PlayerScreen(
     val context = LocalContext.current
     val view = LocalView.current
     val density = LocalDensity.current
+    val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val backdrop = rememberLayerBackdrop()
     val scroll = MiuixScrollBehavior()
     val surface = MiuixTheme.colorScheme.surface
@@ -246,6 +256,8 @@ fun PlayerScreen(
     var videoHeight by remember { mutableIntStateOf(0) }
     /** Position a seek is heading to; -1 when idle. Keeps the poll from undoing the seek. */
     var pendingSeekMs by remember { mutableLongStateOf(-1L) }
+    /** Measured size of the video surface, so the letterbox follows rotation. */
+    var viewSize by remember { mutableStateOf(IntSize.Zero) }
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
     var chromeVisible by remember { mutableStateOf(true) }
@@ -363,21 +375,22 @@ fun PlayerScreen(
         }
     }
 
-    // Immersive mode: hiding the chrome also hides the status bar, and leaving restores it.
-    DisposableEffect(chromeVisible) {
+    // Immersive mode: hiding the chrome hides the status bar, and a landscape video always hides it
+    // so the picture can use the full screen.
+    DisposableEffect(chromeVisible, isLandscape) {
         val window = context.findActivity()?.window
         val controller = window?.let { WindowCompat.getInsetsController(it, view) }
         if (controller != null) {
             controller.systemBarsBehavior =
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            if (chromeVisible) {
+            if (chromeVisible && !isLandscape) {
                 controller.show(WindowInsetsCompat.Type.statusBars())
             } else {
                 controller.hide(WindowInsetsCompat.Type.statusBars())
             }
         }
         onDispose {
-            if (!chromeVisible) {
+            if (!chromeVisible || isLandscape) {
                 controller?.show(WindowInsetsCompat.Type.statusBars())
             }
         }
@@ -420,35 +433,37 @@ fun PlayerScreen(
                         }
                     },
                     update = { textureView ->
-                        // Letterbox to the video's own aspect ratio: without this the TextureView
-                        // stretches the picture to fill the screen.
+                        // Reading the measured size here makes the letterbox recompute when the
+                        // screen rotates, not just when the video's own size arrives.
+                        val bounds = viewSize
                         val vw = videoWidth
                         val vh = videoHeight
-                        if (vw <= 0 || vh <= 0 || textureView.width <= 0 || textureView.height <= 0) {
+                        if (vw <= 0 || vh <= 0 || bounds.width <= 0 || bounds.height <= 0) {
                             return@AndroidView
                         }
-                        val viewRatio = textureView.width.toFloat() / textureView.height
+                        val viewRatio = bounds.width.toFloat() / bounds.height
                         val videoRatio = vw.toFloat() / vh
                         val matrix = Matrix()
                         if (videoRatio > viewRatio) {
                             matrix.setScale(
                                 1f,
                                 viewRatio / videoRatio,
-                                textureView.width / 2f,
-                                textureView.height / 2f,
+                                bounds.width / 2f,
+                                bounds.height / 2f,
                             )
                         } else {
                             matrix.setScale(
                                 videoRatio / viewRatio,
                                 1f,
-                                textureView.width / 2f,
-                                textureView.height / 2f,
+                                bounds.width / 2f,
+                                bounds.height / 2f,
                             )
                         }
                         textureView.setTransform(matrix)
                     },
                     modifier = Modifier
                         .fillMaxSize()
+                        .onSizeChanged { viewSize = it }
                         .graphicsLayer {
                             scaleX = scale
                             scaleY = scale
@@ -508,14 +523,14 @@ fun PlayerScreen(
                             highlightAlpha = 0f,
                         ) {
                             Row(
-                                Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                                Modifier.fillMaxWidth().padding(start = 0.dp, end = 4.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 IconButton(onClick = onBack) {
                                     Icon(
                                         MiuixIcons.Regular.ChevronBackward,
                                         "返回",
-                                        Modifier.size(NAV_ICON_SIZE),
+                                        Modifier.size(TOP_BAR_ICON_SIZE),
                                         tint = titleInk,
                                     )
                                 }
@@ -542,6 +557,21 @@ fun PlayerScreen(
                                             overflow = TextOverflow.Ellipsis,
                                         )
                                     }
+                                }
+                                IconButton(onClick = {
+                                    context.findActivity()?.requestedOrientation =
+                                        if (isLandscape) {
+                                            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                                        } else {
+                                            ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                                        }
+                                }) {
+                                    Icon(
+                                        MiuixIcons.Regular.RotateLeft,
+                                        "旋转",
+                                        Modifier.size(TOP_BAR_ICON_SIZE),
+                                        tint = titleInk,
+                                    )
                                 }
                             }
                         }
@@ -593,7 +623,9 @@ fun PlayerScreen(
                         scrubMs = (fraction * durationMs).toLong().coerceIn(0L, durationMs)
                     },
                     onScrubEnd = {
-                        player?.seekTo(scrubMs.toInt())
+                        // SEEK_CLOSEST instead of the default SEEK_PREVIOUS_SYNC: the default lands
+                        // on the keyframe before the target, which overshoots by 1-2 seconds.
+                        player?.seekTo(scrubMs, MediaPlayer.SEEK_CLOSEST)
                         pendingSeekMs = scrubMs
                         positionMs = scrubMs
                         isScrubbing = false
