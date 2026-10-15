@@ -2,8 +2,11 @@
 // Copyright 2026 btm_m
 package btm.m.xthief.ui.pages
 
+import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -13,6 +16,7 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -21,6 +25,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.items
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -28,7 +33,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -38,6 +47,7 @@ import btm.m.xthief.ui.components.EmptyState
 import btm.m.xthief.ui.components.GlassFloatingToolbar
 import btm.m.xthief.ui.components.GlassFloatingToolbarRow
 import btm.m.xthief.ui.components.IconAction
+import btm.m.xthief.ui.components.ToolbarAnimationTiming
 import btm.m.xthief.ui.components.XThiefDialog
 import btm.m.xthief.ui.fileSizeLabel
 import btm.m.xthief.ui.timeLabel
@@ -65,6 +75,13 @@ fun LibraryPage(
     onShare: (MediaEntry) -> Unit,
     onDelete: (MediaEntry) -> Unit,
     onDeleteAll: (List<MediaEntry>) -> Unit = {},
+    /**
+     * Host-driven visibility of the floating toolbar. It is delayed until the bottom navigation
+     * has finished leaving the screen, so the two never overlap.
+     */
+    toolbarVisible: Boolean = false,
+    /** Lets the host hide the bottom navigation while the selection toolbar is up. */
+    onSelectionModeChange: (Boolean) -> Unit = {},
 ) {
     // Multi-select state, mirroring HyperChanger's list pages.
     var selectionMode by remember { mutableStateOf(false) }
@@ -85,6 +102,12 @@ fun LibraryPage(
     // Refresh automatically on entry so changes made elsewhere show up without a manual tap.
     LaunchedEffect(Unit) { onRefresh() }
 
+    // Report the selection state so the host can animate the bottom navigation away.
+    LaunchedEffect(selectionMode) { onSelectionModeChange(selectionMode) }
+    DisposableEffect(Unit) {
+        onDispose { onSelectionModeChange(false) }
+    }
+
     // Drop selections whose entries disappeared (e.g. after delete + refresh).
     LaunchedEffect(entries) {
         if (selectedIds.isNotEmpty()) {
@@ -100,42 +123,68 @@ fun LibraryPage(
         floatingToolbarPosition = ToolbarPosition.BottomCenter,
         floatingToolbar = {
             AnimatedVisibility(
-                visible = selectionMode,
-                enter = fadeIn(tween(180)) + scaleIn(tween(220), initialScale = .86f),
-                exit = fadeOut(tween(140)) + scaleOut(tween(160), targetScale = .9f),
+                visible = toolbarVisible,
+                enter = fadeIn(tween(ToolbarAnimationTiming.ENTER_MS)) +
+                    scaleIn(tween(ToolbarAnimationTiming.ENTER_MS), initialScale = .86f),
+                exit = fadeOut(tween(ToolbarAnimationTiming.EXIT_MS)) +
+                    scaleOut(tween(ToolbarAnimationTiming.EXIT_MS), targetScale = .9f),
             ) {
-                GlassFloatingToolbar {
-                    GlassFloatingToolbarRow {
-                        IconButton(onClick = {
-                            selectedIds = if (selectedIds.size == entries.size) {
-                                emptySet()
+                // Blur-in alongside the fade: the capsule resolves out of a blur as it appears.
+                val blurProgress by animateFloatAsState(
+                    targetValue = if (toolbarVisible) 1f else 0f,
+                    animationSpec = tween(
+                        durationMillis = ToolbarAnimationTiming.ENTER_MS,
+                        easing = FastOutSlowInEasing,
+                    ),
+                    label = "toolbarBlur",
+                )
+                val blurPx = with(LocalDensity.current) {
+                    (TOOLBAR_MAX_BLUR * (1f - blurProgress.coerceIn(0f, 1f))).toPx()
+                }
+                Box(
+                    Modifier.graphicsLayer {
+                        alpha = blurProgress.coerceIn(0f, 1f)
+                        renderEffect =
+                            if (blurPx > .1f && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                BlurEffect(blurPx, blurPx, TileMode.Clamp)
                             } else {
-                                entries.mapTo(linkedSetOf()) { it.uri }
+                                null
                             }
-                        }) {
-                            Icon(
-                                MiuixIcons.Regular.SelectAll,
-                                "全选",
-                                Modifier.size(26.4.dp),
-                            )
-                        }
-                        IconButton(
-                            enabled = selectedIds.isNotEmpty(),
-                            onClick = { confirmBatchDelete = true },
-                        ) {
-                            Icon(
-                                MiuixIcons.Regular.Delete,
-                                "删除",
-                                Modifier.size(26.4.dp),
-                                tint = Color(0xFFD32F2F),
-                            )
-                        }
-                        IconButton(onClick = { closeSelection() }) {
-                            Icon(
-                                MiuixIcons.Regular.Close,
-                                "关闭",
-                                Modifier.size(26.4.dp),
-                            )
+                    },
+                ) {
+                    GlassFloatingToolbar {
+                        GlassFloatingToolbarRow {
+                            IconButton(onClick = {
+                                selectedIds = if (selectedIds.size == entries.size) {
+                                    emptySet()
+                                } else {
+                                    entries.mapTo(linkedSetOf()) { it.uri }
+                                }
+                            }) {
+                                Icon(
+                                    MiuixIcons.Regular.SelectAll,
+                                    "全选",
+                                    Modifier.size(26.4.dp),
+                                )
+                            }
+                            IconButton(
+                                enabled = selectedIds.isNotEmpty(),
+                                onClick = { confirmBatchDelete = true },
+                            ) {
+                                Icon(
+                                    MiuixIcons.Regular.Delete,
+                                    "删除",
+                                    Modifier.size(26.4.dp),
+                                    tint = Color(0xFFD32F2F),
+                                )
+                            }
+                            IconButton(onClick = { closeSelection() }) {
+                                Icon(
+                                    MiuixIcons.Regular.Close,
+                                    "关闭",
+                                    Modifier.size(26.4.dp),
+                                )
+                            }
                         }
                     }
                 }
@@ -318,3 +367,6 @@ private fun durationLabel(millis: Long): String {
     val seconds = totalSeconds % 60
     return "%d:%02d".format(minutes, seconds)
 }
+
+/** Blur radius the floating toolbar resolves out of as it appears. */
+private val TOOLBAR_MAX_BLUR = 12.dp

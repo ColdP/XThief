@@ -10,6 +10,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.net.HttpURLConnection
+import java.net.URI
 import java.net.URL
 import java.net.URLEncoder
 import java.util.zip.GZIPInputStream
@@ -66,9 +67,25 @@ class XVideoExtractor {
 
         val media = root.optJSONArray("mediaDetails")
             ?: root.optJSONArray("media_details")
-        val variants = media?.let(::parseSyndicationMedia).orEmpty()
+        val variants = media?.let(::parseSyndicationMedia).orEmpty().toMutableList()
+        // Long and sensitive posts often ship HLS only (no progressive MP4), so expand the
+        // master playlist into per-resolution renditions before giving up.
         if (variants.isEmpty()) {
-            throw XExtractionException("该推文不包含可下载的视频")
+            media?.let(::findHlsMasterUrl)?.let { master ->
+                variants += runCatching { resolveHlsVariants(master) }.getOrDefault(emptyList())
+            }
+        }
+        if (variants.isEmpty()) {
+            // Sensitive posts are frequently withheld from logged-out callers entirely, which
+            // otherwise looks identical to "this post has no video".
+            val sensitive = root.optBoolean("possibly_sensitive", false)
+            throw XExtractionException(
+                if (sensitive) {
+                    "该推文被标记为敏感内容，X 未向未登录请求返回媒体"
+                } else {
+                    "该推文不包含可下载的视频"
+                },
+            )
         }
 
         return TweetMedia(
@@ -277,6 +294,120 @@ class XVideoExtractor {
         val width = match.groupValues[1].toIntOrNull() ?: 0
         val height = match.groupValues[2].toIntOrNull() ?: 0
         return width to height
+    }
+
+    // ------------------------------------------------------------- HLS fallback
+
+    /** Finds the HLS master playlist URL when a post exposes no progressive MP4 variant. */
+    private fun findHlsMasterUrl(media: JSONArray): String? {
+        for (index in 0 until media.length()) {
+            val item = media.optJSONObject(index) ?: continue
+            val info = item.optJSONObject("video_info")
+                ?: item.optJSONObject("videoInfo")
+                ?: continue
+            val list = info.optJSONArray("variants") ?: continue
+            for (variantIndex in 0 until list.length()) {
+                val variant = list.optJSONObject(variantIndex) ?: continue
+                val source = variant.optString("url")
+                val type = variant.optString("content_type")
+                if (type.contains("mpegURL", ignoreCase = true) ||
+                    source.contains(".m3u8", ignoreCase = true)
+                ) {
+                    return source
+                }
+            }
+        }
+        return null
+    }
+
+    /**
+     * Expands an HLS master playlist into one [VideoVariant] per advertised resolution.
+     *
+     * X serves fMP4: each media playlist starts with an `#EXT-X-MAP` init segment (carrying the
+     * `moov` box) followed by `.m4s` parts, so concatenating them yields a playable MP4. Audio
+     * lives on its own playlist, whose URL is carried along for the downloader to mux back in.
+     */
+    private fun resolveHlsVariants(masterUrl: String): List<VideoVariant> {
+        val text = httpGet(masterUrl, bearer = null, guestToken = null, accept = "*/*")
+        val origin = originOf(masterUrl)
+        // Audio group id -> (bitrate, playlist url); the highest bitrate per group wins.
+        val audioGroups = mutableMapOf<String, Pair<Int, String>>()
+        val variants = mutableListOf<VideoVariant>()
+        var resolution = 0 to 0
+        var bandwidth = 0
+        var audioGroup = ""
+
+        text.lineSequence().map(String::trim).forEach { line ->
+            when {
+                line.startsWith("#EXT-X-MEDIA:") && line.contains("TYPE=AUDIO", ignoreCase = true) -> {
+                    val group = attr(line, "GROUP-ID")
+                    val uri = attr(line, "URI")
+                    if (group.isNotBlank() && uri.isNotBlank()) {
+                        val bitrate = group.substringAfterLast('-').toIntOrNull() ?: 0
+                        val existing = audioGroups[group]
+                        if (existing == null || existing.first < bitrate) {
+                            audioGroups[group] = bitrate to absoluteUrl(origin, uri)
+                        }
+                    }
+                }
+
+                line.startsWith("#EXT-X-STREAM-INF:") -> {
+                    resolution = parseResolution(attr(line, "RESOLUTION"))
+                    bandwidth = attr(line, "BANDWIDTH").toIntOrNull() ?: 0
+                    audioGroup = attr(line, "AUDIO")
+                }
+
+                line.isBlank() || line.startsWith("#") -> Unit
+
+                else -> {
+                    variants += VideoVariant(
+                        url = absoluteUrl(origin, line),
+                        bitrate = bandwidth,
+                        // The assembled result is an MP4 even though the source is a playlist.
+                        contentType = "video/mp4",
+                        width = resolution.first,
+                        height = resolution.second,
+                        hlsAudioUrl = audioGroups[audioGroup]?.second,
+                    )
+                    resolution = 0 to 0
+                    bandwidth = 0
+                    audioGroup = ""
+                }
+            }
+        }
+        return dedupe(variants)
+    }
+
+    /** Reads `NAME=value` or `NAME="value"` from an m3u8 tag line. */
+    private fun attr(line: String, name: String): String {
+        val marker = "$name="
+        val start = line.indexOf(marker)
+        if (start < 0) return ""
+        val rest = line.substring(start + marker.length)
+        return if (rest.startsWith("\"")) {
+            rest.substringAfter('"').substringBefore('"')
+        } else {
+            rest.substringBefore(',')
+        }
+    }
+
+    /** Parses a `RESOLUTION=1920x1080` attribute. */
+    private fun parseResolution(value: String): Pair<Int, Int> {
+        val parts = value.split('x')
+        if (parts.size != 2) return 0 to 0
+        return (parts[0].toIntOrNull() ?: 0) to (parts[1].toIntOrNull() ?: 0)
+    }
+
+    private fun originOf(url: String): String = runCatching {
+        val uri = URI(url)
+        "${uri.scheme}://${uri.host}"
+    }.getOrDefault("https://video.twimg.com")
+
+    /** Playlist entries are root-relative (`/amplify_video/...`). */
+    private fun absoluteUrl(origin: String, value: String): String = when {
+        value.startsWith("http", ignoreCase = true) -> value
+        value.startsWith("/") -> origin + value
+        else -> "$origin/$value"
     }
 
     private fun dedupe(variants: List<VideoVariant>): List<VideoVariant> {

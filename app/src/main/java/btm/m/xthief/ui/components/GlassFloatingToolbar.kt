@@ -33,7 +33,9 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 fun GlassFloatingToolbar(
     content: @Composable () -> Unit,
 ) {
-    val backdrop = LocalToolbarBackdrop.current
+    // Scaffold's floatingToolbar slot sits outside the topBar's LocalToolbarBackdrop provider,
+    // so fall back to the page backdrop that AppPage publishes for in-page overlays.
+    val backdrop = LocalToolbarBackdrop.current ?: LocalPageBackdrop.current
     val animationScope = rememberCoroutineScope()
     val touchHighlight = remember(animationScope) {
         InteractiveHighlight(
@@ -97,4 +99,16 @@ fun GlassFloatingToolbarRow(content: @Composable () -> Unit) {
         verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
         content = { content() },
     )
+}
+
+/**
+ * Floating-toolbar enter/exit durations, scaled to 85% of the original 220/160 ms. Exposed so the
+ * host can wait for the toolbar to leave before bringing the bottom navigation back.
+ */
+object ToolbarAnimationTiming {
+    /** Blur + fade + scale in. */
+    const val ENTER_MS = 187
+
+    /** Fade + scale out. */
+    const val EXIT_MS = 136
 }

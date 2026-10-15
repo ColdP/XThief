@@ -38,6 +38,8 @@ import btm.m.xthief.data.NavigationStyle
 import btm.m.xthief.ui.components.CustomNavigation
 import btm.m.xthief.ui.components.HostTab
 import btm.m.xthief.ui.components.LocalDialogBackdrop
+import btm.m.xthief.ui.components.NavAnimationTiming
+import btm.m.xthief.ui.components.ToolbarAnimationTiming
 import btm.m.xthief.ui.pages.AboutScreen
 import btm.m.xthief.ui.pages.DownloadTab
 import btm.m.xthief.ui.pages.HistoryPage
@@ -47,6 +49,7 @@ import btm.m.xthief.ui.pages.SettingsPage
 import btm.m.xthief.x.DownloadStatus
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.Scaffold
 
@@ -67,6 +70,25 @@ fun XThiefScreen(
     val history by container.historyStore.records.collectAsState()
     val library by container.mediaLibrary.entries.collectAsState()
     val tasks by container.downloadManager.tasks.collectAsStateWithLifecycle()
+    // True while the media library is in multi-select: the bottom navigation slides away so the
+    // floating selection toolbar has the area to itself.
+    var librarySelecting by remember { mutableStateOf(false) }
+    // Staged so the two never overlap: the bar finishes leaving before the toolbar appears, and
+    // the toolbar finishes leaving before the bar comes back.
+    var libraryNavHidden by remember { mutableStateOf(false) }
+    var libraryToolbarVisible by remember { mutableStateOf(false) }
+
+    LaunchedEffect(librarySelecting) {
+        if (librarySelecting) {
+            libraryNavHidden = true
+            delay(NavAnimationTiming.HIDE_MS.toLong())
+            libraryToolbarVisible = true
+        } else {
+            libraryToolbarVisible = false
+            delay(ToolbarAnimationTiming.EXIT_MS.toLong())
+            libraryNavHidden = false
+        }
+    }
     val dark = rememberDarkTheme(settings.appColorMode)
     var tab by remember { mutableStateOf(MainTab.PARSE) }
     var pageStack by remember { mutableStateOf<List<DetailPage>>(emptyList()) }
@@ -184,6 +206,8 @@ fun XThiefScreen(
                                 onShare = { shareUri(container, it.uri, it.displayName) },
                                 onDelete = { container.mediaLibrary.delete(it) },
                                 onDeleteAll = { targets -> container.mediaLibrary.deleteAll(targets) },
+                                onSelectionModeChange = { active -> librarySelecting = active },
+                                toolbarVisible = libraryToolbarVisible,
                             )
 
                             MainTab.SETTINGS -> SettingsPage(
@@ -253,6 +277,7 @@ fun XThiefScreen(
                             // Without this the liquid-glass style falls back to its built-in
                             // brand icon mapping and renders generic "dynamic" glyphs.
                             tabImageVector = { index -> MainTab.entries[index].icon },
+                            visible = !(tab == MainTab.LIBRARY && libraryNavHidden),
                         )
                     }
 

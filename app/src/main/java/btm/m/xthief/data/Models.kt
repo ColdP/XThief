@@ -10,7 +10,15 @@ data class VideoVariant(
     /** Width parsed from the X URL pattern (`/<width>x<height>/`), 0 when unknown. */
     val width: Int = 0,
     val height: Int = 0,
+    /**
+     * For HLS renditions whose audio lives in a separate playlist, the audio media-playlist URL.
+     * Non-null marks this variant as HLS to be assembled from fMP4 segments.
+     */
+    val hlsAudioUrl: String? = null,
 ) {
+    /** True when this rendition must be downloaded as an HLS playlist rather than a plain MP4. */
+    val isHls: Boolean get() = url.contains(".m3u8", ignoreCase = true)
+
     val resolutionLabel: String
         get() = when {
             width > 0 && height > 0 -> "${minOf(width, height)}p"
@@ -20,7 +28,7 @@ data class VideoVariant(
 
     val fileSizeLabel: String get() = if (bitrate > 0) "$bitrate bps" else "未知码率"
 
-    /** Best-effort ordering key: m3u8 playlists are rejected upstream, so bitrate drives it. */
+    /** Best-effort ordering key: HLS ranks below progressive MP4 at the same resolution. */
     val sortKey: Int get() = bitrate * 1000 + height
 }
 

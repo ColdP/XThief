@@ -77,6 +77,8 @@ fun BlurFadeVisibility(
 fun BlurFadeContent(
     visible: Boolean,
     modifier: Modifier = Modifier,
+    /** Fixed blur radius; when null the radius scales with the measured height. */
+    maxBlur: Dp? = null,
     content: @Composable () -> Unit,
 ) {
     val settled by animateFloatAsState(
@@ -86,11 +88,11 @@ fun BlurFadeContent(
     )
     var heightPx by remember { mutableIntStateOf(0) }
     val density = LocalDensity.current
-    val maxBlur = with(density) {
+    val effectiveBlur = maxBlur ?: with(density) {
         // ~6% of the row height, clamped so small rows stay legible.
         (heightPx * .06f).toDp().coerceIn(.5.dp, 16.dp)
     }
-    val radius: Dp = maxBlur * (1f - settled.coerceIn(0f, 1f))
+    val radius: Dp = effectiveBlur * (1f - settled.coerceIn(0f, 1f))
     Column(
         modifier
             .fillMaxWidth()

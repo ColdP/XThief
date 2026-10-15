@@ -4,6 +4,10 @@ package btm.m.xthief.x
 
 import android.content.ContentValues
 import android.content.Context
+import android.media.MediaCodec
+import android.media.MediaExtractor
+import android.media.MediaFormat
+import android.media.MediaMuxer
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
@@ -28,8 +32,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.IOException
+import java.io.OutputStream
 import java.net.HttpURLConnection
+import java.net.URI
 import java.net.URL
+import java.nio.ByteBuffer
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -147,46 +154,58 @@ class XDownloadManager(
                 throw IOException("已开启「仅 Wi-Fi 下载」，当前不在 Wi-Fi 网络")
             }
             update(id) { it.copy(status = DownloadStatus.RUNNING, bytesDownloaded = 0L, totalBytes = -1L) }
-            connection = (URL(task.variant.url).openConnection() as HttpURLConnection).apply {
-                connectTimeout = 20_000
-                readTimeout = 30_000
-                instanceFollowRedirects = true
-                setRequestProperty("User-Agent", DOWNLOAD_USER_AGENT)
-                setRequestProperty("Accept", "*/*")
-            }
-            val code = connection.responseCode
-            if (code !in 200..299) throw IOException("下载失败（HTTP $code）")
-            val total = connection.contentLengthLong
             target = createTarget(task.fileName, settings)
             val tracker = SpeedTracker()
             var downloaded = 0L
             var lastIslandUpdate = 0L
-            connection.inputStream.use { input ->
-                target.openOutput().use { output ->
-                    val buffer = ByteArray(64 * 1024)
-                    while (true) {
-                        val read = input.read(buffer)
-                        if (read < 0) break
-                        output.write(buffer, 0, read)
-                        downloaded += read
-                        val speed = tracker.record(downloaded)
-                        update(id) {
-                            it.copy(
-                                bytesDownloaded = downloaded,
-                                totalBytes = if (total > 0) total else downloaded,
-                                speedBytesPerSecond = speed,
-                            )
-                        }
-                        // Refresh the island at most every 500ms so it stays smooth.
-                        if (settings.islandEnabled) {
-                            val now = System.currentTimeMillis()
-                            if (now - lastIslandUpdate >= ISLAND_UPDATE_INTERVAL_MS) {
-                                lastIslandUpdate = now
-                                task(id)?.let { island.updateProgress(it) }
-                            }
-                        }
+
+            fun reportProgress(bytes: Long, total: Long) {
+                downloaded = bytes
+                update(id) {
+                    it.copy(
+                        bytesDownloaded = bytes,
+                        totalBytes = if (total > 0) total else bytes,
+                        speedBytesPerSecond = tracker.record(bytes),
+                    )
+                }
+                // Refresh the island at most every 500ms so it stays smooth.
+                if (settings.islandEnabled) {
+                    val now = System.currentTimeMillis()
+                    if (now - lastIslandUpdate >= ISLAND_UPDATE_INTERVAL_MS) {
+                        lastIslandUpdate = now
+                        task(id)?.let { island.updateProgress(it) }
                     }
-                    output.flush()
+                }
+            }
+
+            if (task.variant.isHls) {
+                // HLS renditions (long/sensitive posts have no progressive MP4) are assembled from
+                // the playlist's fMP4 init segment and parts, then the audio track is muxed in.
+                downloaded = streamHls(task.variant, target) { bytes, total ->
+                    reportProgress(bytes, total)
+                }
+            } else {
+                connection = (URL(task.variant.url).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 20_000
+                    readTimeout = 30_000
+                    instanceFollowRedirects = true
+                    setRequestProperty("User-Agent", DOWNLOAD_USER_AGENT)
+                    setRequestProperty("Accept", "*/*")
+                }
+                val code = connection.responseCode
+                if (code !in 200..299) throw IOException("下载失败（HTTP $code）")
+                val total = connection.contentLengthLong
+                connection.inputStream.use { input ->
+                    target.openOutput().use { output ->
+                        val buffer = ByteArray(64 * 1024)
+                        while (true) {
+                            val read = input.read(buffer)
+                            if (read < 0) break
+                            output.write(buffer, 0, read)
+                            reportProgress(downloaded + read, total)
+                        }
+                        output.flush()
+                    }
                 }
             }
             val uri = target.finish(downloaded)
@@ -194,7 +213,8 @@ class XDownloadManager(
                 it.copy(
                     status = DownloadStatus.COMPLETED,
                     bytesDownloaded = downloaded,
-                    totalBytes = if (total > 0) total else downloaded,
+                    // HLS tasks have no Content-Length, so the final size is what we wrote.
+                    totalBytes = downloaded,
                     speedBytesPerSecond = 0L,
                     savedUri = uri,
                 )
@@ -381,6 +401,268 @@ class XDownloadManager(
         } else {
             val relative = DEFAULT_SAVE_DIR.trim('/').trimEnd('/') + "/"
             MediaStoreTarget(fileName, relative, mime)
+        }
+    }
+
+    // ------------------------------------------------------------------ HLS
+
+    /**
+     * Downloads an HLS rendition and writes a single MP4 to [target].
+     *
+     * X serves fMP4: every media playlist starts with an `#EXT-X-MAP` init segment (holding the
+     * `moov` box) followed by `.m4s` parts, so appending them in order already yields a valid MP4.
+     * The audio lives on a separate playlist; when present both tracks are muxed with the platform
+     * [MediaMuxer] so the result keeps its sound.
+     *
+     * @return the number of bytes written to the target.
+     */
+    private suspend fun streamHls(
+        variant: VideoVariant,
+        target: DownloadTarget,
+        onProgress: (bytes: Long, total: Long) -> Unit,
+    ): Long {
+        val workspace = File(appContext.cacheDir, "hls").apply { mkdirs() }
+        val stamp = "${System.currentTimeMillis()}_${variant.url.hashCode()}"
+        val videoFile = File(workspace, "video_$stamp.mp4")
+        val audioFile = File(workspace, "audio_$stamp.mp4")
+        var muxedFile: File? = null
+        try {
+            var videoBytes = 0L
+            videoBytes += fetchPlaylistInto(variant.url, videoFile) { written ->
+                onProgress(written, -1L)
+            }
+            val audioUrl = variant.hlsAudioUrl
+            var audioBytes = 0L
+            if (audioUrl != null) {
+                audioBytes = fetchPlaylistInto(audioUrl, audioFile) { }
+            }
+            val total = videoBytes + audioBytes
+
+            if (audioBytes > 0) {
+                val (file, bytes) = muxTracks(videoFile, audioFile)
+                muxedFile = file
+                file.inputStream().use { input ->
+                    target.openOutput().use { output ->
+                        input.copyToWithProgress(output, bytes) { copied ->
+                            onProgress(copied, bytes)
+                        }
+                    }
+                }
+                return bytes
+            }
+
+            // Video-only fallback: the concatenated fMP4 is already playable.
+            videoFile.inputStream().use { input ->
+                target.openOutput().use { output ->
+                    input.copyToWithProgress(output, total) { copied ->
+                        onProgress(copied, total)
+                    }
+                }
+            }
+            return total
+        } finally {
+            videoFile.delete()
+            audioFile.delete()
+            muxedFile?.delete()
+        }
+    }
+
+    /**
+     * Downloads a media playlist into [dest]: first the `#EXT-X-MAP` init segment, then every part,
+     * appended in playlist order. Returns the number of bytes written.
+     */
+    private fun fetchPlaylistInto(
+        playlistUrl: String,
+        dest: File,
+        onProgress: (Long) -> Unit,
+    ): Long {
+        val text = httpGetText(playlistUrl)
+        val origin = originOf(playlistUrl)
+        val entries = mutableListOf<String>()
+        text.lineSequence().map(String::trim).forEach { line ->
+            when {
+                line.startsWith("#EXT-X-MAP:") ->
+                    attr(line, "URI").takeIf(String::isNotBlank)?.let { entries += it }
+
+                line.isBlank() || line.startsWith("#") -> Unit
+
+                else -> entries += line
+            }
+        }
+        if (entries.isEmpty()) throw IOException("HLS 播放列表为空")
+
+        var written = 0L
+        dest.outputStream().use { output ->
+            for (entry in entries) {
+                written += downloadInto(absoluteUrl(origin, entry), output)
+                onProgress(written)
+            }
+            output.flush()
+        }
+        return written
+    }
+
+    /** Streams one HLS part into [output]. */
+    private fun downloadInto(url: String, output: OutputStream): Long {
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 20_000
+            readTimeout = 30_000
+            instanceFollowRedirects = true
+            setRequestProperty("User-Agent", DOWNLOAD_USER_AGENT)
+            setRequestProperty("Accept", "*/*")
+        }
+        return try {
+            val code = connection.responseCode
+            if (code !in 200..299) throw IOException("分片下载失败（HTTP $code）")
+            var total = 0L
+            connection.inputStream.use { input ->
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read < 0) break
+                    output.write(buffer, 0, read)
+                    total += read
+                }
+            }
+            total
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    /**
+     * Muxes the downloaded video and audio tracks into one MP4 on disk.
+     *
+     * @return the muxed file and its size; the caller owns (and must delete) the file.
+     */
+    private fun muxTracks(videoFile: File, audioFile: File): Pair<File, Long> {
+        val workspace = videoFile.parentFile ?: appContext.cacheDir
+        val output = File(workspace, "muxed_${System.currentTimeMillis()}.mp4")
+        val muxer = MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        val extractors = mutableListOf<MediaExtractor>()
+        try {
+            val videoExtractor = MediaExtractor().apply { setDataSource(videoFile.absolutePath) }
+            val audioExtractor = MediaExtractor().apply { setDataSource(audioFile.absolutePath) }
+            extractors += videoExtractor
+            extractors += audioExtractor
+
+            val videoSource = firstTrackOf(videoExtractor, "video/")
+            if (videoSource < 0) throw IOException("HLS 视频轨解析失败")
+            val audioSource = firstTrackOf(audioExtractor, "audio/")
+
+            videoExtractor.selectTrack(videoSource)
+            val videoTarget = muxer.addTrack(videoExtractor.getTrackFormat(videoSource))
+            var audioTarget = -1
+            if (audioSource >= 0) {
+                audioExtractor.selectTrack(audioSource)
+                audioTarget = muxer.addTrack(audioExtractor.getTrackFormat(audioSource))
+            }
+
+            muxer.start()
+            val buffer = ByteBuffer.allocate(1 shl 20)
+            val info = MediaCodec.BufferInfo()
+            videoExtractor.seekTo(0, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+            copySamples(videoExtractor, muxer, videoTarget, buffer, info)
+            if (audioTarget >= 0) {
+                audioExtractor.seekTo(0, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+                copySamples(audioExtractor, muxer, audioTarget, buffer, info)
+            }
+            muxer.stop()
+        } catch (error: Throwable) {
+            runCatching { output.delete() }
+            throw error
+        } finally {
+            runCatching { muxer.release() }
+            extractors.forEach { runCatching { it.release() } }
+        }
+        return output to output.length()
+    }
+
+    private fun firstTrackOf(extractor: MediaExtractor, mimePrefix: String): Int {
+        for (index in 0 until extractor.trackCount) {
+            val mime = extractor.getTrackFormat(index)
+                .getString(MediaFormat.KEY_MIME)
+                .orEmpty()
+            if (mime.startsWith(mimePrefix)) return index
+        }
+        return -1
+    }
+
+    private fun copySamples(
+        extractor: MediaExtractor,
+        muxer: MediaMuxer,
+        trackIndex: Int,
+        buffer: ByteBuffer,
+        info: MediaCodec.BufferInfo,
+    ) {
+        while (true) {
+            val size = extractor.readSampleData(buffer, 0)
+            if (size < 0) break
+            info.offset = 0
+            info.size = size
+            info.presentationTimeUs = extractor.sampleTime
+            info.flags = extractor.sampleFlags
+            runCatching { muxer.writeSampleData(trackIndex, buffer, info) }
+            if (!extractor.advance()) break
+        }
+    }
+
+    private fun java.io.InputStream.copyToWithProgress(
+        output: OutputStream,
+        total: Long,
+        onProgress: (Long) -> Unit,
+    ) {
+        val buffer = ByteArray(64 * 1024)
+        var copied = 0L
+        while (true) {
+            val read = read(buffer)
+            if (read < 0) break
+            output.write(buffer, 0, read)
+            copied += read
+            onProgress(copied)
+        }
+        output.flush()
+    }
+
+    private fun httpGetText(url: String): String {
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 20_000
+            readTimeout = 30_000
+            instanceFollowRedirects = true
+            setRequestProperty("User-Agent", DOWNLOAD_USER_AGENT)
+            setRequestProperty("Accept", "*/*")
+        }
+        return try {
+            val code = connection.responseCode
+            if (code !in 200..299) throw IOException("播放列表下载失败（HTTP $code）")
+            connection.inputStream.bufferedReader().use { it.readText() }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun originOf(url: String): String = runCatching {
+        val uri = URI(url)
+        "${uri.scheme}://${uri.host}"
+    }.getOrDefault("https://video.twimg.com")
+
+    /** Playlist entries are root-relative (`/amplify_video/...`). */
+    private fun absoluteUrl(origin: String, value: String): String = when {
+        value.startsWith("http", ignoreCase = true) -> value
+        value.startsWith("/") -> origin + value
+        else -> "$origin/$value"
+    }
+
+    private fun attr(line: String, name: String): String {
+        val marker = "$name="
+        val start = line.indexOf(marker)
+        if (start < 0) return ""
+        val rest = line.substring(start + marker.length)
+        return if (rest.startsWith("\"")) {
+            rest.substringAfter('"').substringBefore('"')
+        } else {
+            rest.substringBefore(',')
         }
     }
 

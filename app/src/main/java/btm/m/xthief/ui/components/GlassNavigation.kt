@@ -3,12 +3,15 @@
 package btm.m.xthief.ui.components
 
 import android.content.res.Configuration
+import android.os.Build
 import android.view.HapticFeedbackConstants
 import android.view.View
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.EaseOut
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -49,6 +52,7 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
@@ -63,8 +67,10 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.GraphicsLayerScope
+import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.graphics.vector.path
@@ -80,6 +86,7 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -186,10 +193,25 @@ fun CustomNavigation(
     onHostPreDraw: () -> Unit,
     backdropOverride: Backdrop? = null,
     tabImageVector: ((Int) -> ImageVector)? = null,
-    tabIconContent: (@Composable (Int, Color) -> Unit)? = null
+    tabIconContent: (@Composable (Int, Color) -> Unit)? = null,
+    /**
+     * Hides the bar (for example while a selection toolbar is on screen). The floating styles
+     * blur, fade and slide off the bottom with an accelerated curve; the docked HyperOS bar only
+     * blurs and fades.
+     */
+    visible: Boolean = true,
 ) {
     if (tabs.isEmpty()) return
     val style = NavigationStyle.fromPreference(navigationStyle)
+    // 1 = fully shown, 0 = fully hidden. Drives blur, alpha and the slide-out.
+    val hideProgress by animateFloatAsState(
+        targetValue = if (visible) 1f else 0f,
+        animationSpec = tween(
+            durationMillis = if (visible) NavAnimationTiming.SHOW_MS else NavAnimationTiming.HIDE_MS,
+            easing = FastOutSlowInEasing,
+        ),
+        label = "navVisibility",
+    )
     val requestedMode = LabelMode.fromPreference(labelMode)
     val effectiveMode = requestedMode
     val systemIsDarkTheme = LocalConfiguration.current.uiMode and
@@ -202,7 +224,7 @@ fun CustomNavigation(
     val backdrop = backdropOverride ?: rememberNativeViewBackdrop(sourceView, onHostPreDraw, redrawNativeText)
     val density = LocalDensity.current
     if (style != NavigationStyle.LIQUID_GLASS) {
-        Box(Modifier.fillMaxSize()) {
+        Box(Modifier.fillMaxSize().navHideAnimation(hideProgress, NAV_HIDE_MAX_BLUR, style)) {
             if (concealHostBottomBar) {
                 HostBottomBarConcealment(backdrop, hostIsDarkTheme, density)
             }
@@ -230,7 +252,7 @@ fun CustomNavigation(
     }
     val view = LocalView.current
 
-    Box(Modifier.fillMaxSize()) {
+    Box(Modifier.fillMaxSize().navHideAnimation(hideProgress, NAV_HIDE_MAX_BLUR, style)) {
         if (concealHostBottomBar) {
             HostBottomBarConcealment(backdrop, hostIsDarkTheme, density)
         }
@@ -309,6 +331,48 @@ fun CustomNavigation(
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * Hide/show animation for the bottom navigation.
+ *
+ * 1 = fully visible, 0 = fully hidden. The blur, fade and slide are all driven inside a single
+ * `graphicsLayer` so every frame interpolates smoothly (splitting them across `Modifier.blur`
+ * nodes made the bar pop out instead of dissolving).
+ *
+ * The stages are staggered to read as "blur, then fade away, then drop off the bottom":
+ * - first 45% of the hide: blur ramps 0 -> max;
+ * - after 45%: alpha ramps 1 -> 0;
+ * - after 20%: the floating bars accelerate downwards (quadratic), while the docked HyperOS bar
+ *   stays put and only blurs and fades.
+ */
+@Composable
+private fun Modifier.navHideAnimation(
+    progress: Float,
+    maxBlur: Dp,
+    style: NavigationStyle,
+): Modifier {
+    val density = LocalDensity.current
+    val hidden = 1f - progress.coerceIn(0f, 1f)
+    val isDocked = style == NavigationStyle.HYPER_OS
+
+    val blurFraction = (hidden / 0.45f).coerceIn(0f, 1f)
+    val alphaValue = 1f - ((hidden - 0.45f) / 0.55f).coerceIn(0f, 1f)
+    val slideFraction = ((hidden - 0.2f) / 0.8f).coerceIn(0f, 1f)
+
+    val blurPx = with(density) { (maxBlur * blurFraction).toPx() }
+    val slidePx = with(density) { NAV_HIDE_SLIDE.toPx() } * (slideFraction * slideFraction)
+
+    return this.graphicsLayer {
+        alpha = alphaValue
+        if (!isDocked) translationY = slidePx
+        // Compose's own blur effect; the platform RenderEffect is not accepted here.
+        renderEffect = if (blurPx > .1f && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            BlurEffect(blurPx, blurPx, TileMode.Clamp)
+        } else {
+            null
         }
     }
 }
@@ -1930,4 +1994,23 @@ private fun TabIcon(label: String, color: Color) {
             }, color, style = stroke)
         }
     }
+}
+
+/** Peak blur applied while the bottom navigation is hiding. */
+private val NAV_HIDE_MAX_BLUR = 16.dp
+
+/** Distance the floating bars travel when hiding (they are moved off the bottom edge). */
+private val NAV_HIDE_SLIDE = 190.dp
+
+/**
+ * Bottom-navigation hide/show durations, already scaled to 85% of the original 380/460 ms so the
+ * transition stays snappy. Exposed so hosts can chain the floating selection toolbar after the bar
+ * has left the screen (and vice versa).
+ */
+object NavAnimationTiming {
+    /** Blur-out + slide-away duration. */
+    const val HIDE_MS = 323
+
+    /** Blur-in + slide-back duration (the reverse animation). */
+    const val SHOW_MS = 391
 }
