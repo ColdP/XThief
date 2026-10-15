@@ -69,7 +69,7 @@ import btm.m.xthief.ui.AppPage
 import btm.m.xthief.ui.components.EmptyState
 import btm.m.xthief.ui.components.GlassFloatingToolbar
 import btm.m.xthief.ui.components.GlassFloatingToolbarRow
-import btm.m.xthief.ui.components.IconAction
+import btm.m.xthief.ui.components.GlassToolbarIconButton
 import btm.m.xthief.ui.components.SensitiveBadge
 import btm.m.xthief.ui.components.TOOLBAR_MAX_BLUR
 import btm.m.xthief.ui.components.ToolbarAnimationTiming
@@ -232,7 +232,9 @@ fun LibraryPage(
             ) {
                 Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                     val grid = viewMode == LIBRARY_VIEW_GRID
-                    IconAction(
+                    // GlassToolbarIconButton is the same capsule the About page's back button uses:
+                    // its liquid-glass backdrop fades in as the top bar collapses.
+                    GlassToolbarIconButton(
                         // The icon announces what tapping switches to.
                         icon = if (grid) {
                             MiuixIcons.Regular.ListView
@@ -242,7 +244,7 @@ fun LibraryPage(
                         description = if (grid) "切换为列表" else "切换为瀑布流",
                         onClick = onToggleViewMode,
                     )
-                    IconAction(
+                    GlassToolbarIconButton(
                         icon = MiuixIcons.Regular.Refresh,
                         description = "刷新",
                         onClick = onRefresh,
@@ -498,16 +500,30 @@ private fun MediaCoverCard(
             .combinedClickable(onClick = onClick, onLongClick = onLongPress),
     ) {
         if (cover != null) {
+            // Sensitive covers use a render effect rather than Modifier.blur: blur() feathers its
+            // edges, so a tall portrait card ends up only partly obscured.
+            val sensitiveBlurPx = with(LocalDensity.current) {
+                if (blurCover) SENSITIVE_BLUR.toPx() else 0f
+            }
             Image(
                 bitmap = cover!!,
                 contentDescription = entry.displayName,
                 contentScale = ContentScale.FillWidth,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .then(if (blurCover) Modifier.blur(20.dp) else Modifier),
+                    .graphicsLayer {
+                        renderEffect = if (
+                            sensitiveBlurPx > .1f && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+                        ) {
+                            BlurEffect(sensitiveBlurPx, sensitiveBlurPx, TileMode.Clamp)
+                        } else {
+                            null
+                        }
+                    },
             )
             // Frosted band: the same artwork, clipped to the metadata strip and blurred, so the
-            // gradient sits on a soft surface instead of a hard colour wash.
+            // gradient sits on a soft surface instead of a hard colour wash. It carries the
+            // sensitive blur too, otherwise it would repaint the lower part sharply.
             Box(
                 Modifier
                     .align(Alignment.BottomStart)
@@ -527,7 +543,23 @@ private fun MediaCoverCard(
                     contentScale = ContentScale.FillWidth,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .align(Alignment.BottomCenter),
+                        .align(Alignment.BottomCenter)
+                        .then(
+                            if (blurCover) {
+                                Modifier.graphicsLayer {
+                                    renderEffect = if (
+                                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+                                    ) {
+                                        val px = SENSITIVE_BLUR.toPx()
+                                        BlurEffect(px, px, TileMode.Clamp)
+                                    } else {
+                                        null
+                                    }
+                                }
+                            } else {
+                                Modifier
+                            },
+                        ),
                 )
             }
         } else {
@@ -615,13 +647,24 @@ private fun ListCover(
         contentAlignment = Alignment.Center,
     ) {
         if (cover != null) {
+            val sensitiveBlurPx = with(LocalDensity.current) {
+                if (blurCover) SENSITIVE_BLUR.toPx() else 0f
+            }
             Image(
                 bitmap = cover!!,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier
                     .fillMaxSize()
-                    .then(if (blurCover) Modifier.blur(14.dp) else Modifier),
+                    .graphicsLayer {
+                        renderEffect = if (
+                            sensitiveBlurPx > .1f && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+                        ) {
+                            BlurEffect(sensitiveBlurPx, sensitiveBlurPx, TileMode.Clamp)
+                        } else {
+                            null
+                        }
+                    },
             )
         }
     }
@@ -639,3 +682,6 @@ private val BLUR_BAND_HEIGHT = 118.dp
 
 /** Blur applied inside that strip. */
 private val BLUR_BAND_RADIUS = 22.dp
+
+/** Blur applied to the cover of a sensitive entry, so the whole card is evenly obscured. */
+private val SENSITIVE_BLUR = 26.dp
