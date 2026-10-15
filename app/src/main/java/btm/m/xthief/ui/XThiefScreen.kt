@@ -509,18 +509,6 @@ fun XThiefScreen(
                                     }
                                 },
                                 onOpenWith = { openUri(container, source.uri) },
-                                onInfo = {
-                                    toast(
-                                        context,
-                                        buildString {
-                                            append(source.title)
-                                            if (source.subtitle.isNotBlank()) {
-                                                append("\n${source.subtitle}")
-                                            }
-                                            append("\n${source.uri}")
-                                        },
-                                    )
-                                },
                                 onShare = { shareUri(container, source.uri, source.title) },
                                 onDelete = { confirmPlayerDelete = true },
                                 onBack = { playerSource = null },

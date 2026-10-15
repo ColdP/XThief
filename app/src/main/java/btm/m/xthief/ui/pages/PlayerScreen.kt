@@ -13,6 +13,7 @@ import android.graphics.SurfaceTexture
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.net.Uri
+import android.provider.MediaStore
 import android.view.Surface
 import android.view.TextureView
 import androidx.compose.animation.AnimatedVisibility
@@ -93,6 +94,10 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import top.yukonga.miuix.kmp.basic.HorizontalDivider
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.LinearProgressIndicator
@@ -117,10 +122,13 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 import btm.m.xthief.data.NavigationStyle
 import btm.m.xthief.ui.TopBarMaterial
 import btm.m.xthief.ui.components.BlurFadeContent
+import btm.m.xthief.ui.components.GlassDialogButton
 import btm.m.xthief.ui.components.GlassFloatingToolbar
 import btm.m.xthief.ui.components.GlassToolbarIconButton
 import btm.m.xthief.ui.components.LocalPageBackdrop
+import btm.m.xthief.ui.components.WindowDialog
 import btm.m.xthief.ui.components.navHideAnimation
+import btm.m.xthief.ui.fileSizeLabel
 
 /** What the player is showing. */
 data class PlayerSource(
@@ -248,7 +256,6 @@ fun PlayerScreen(
     onSwitchVideo: (Int) -> Unit = {},
     onToggleFavorite: () -> Unit,
     onOpenWith: () -> Unit,
-    onInfo: () -> Unit,
     onShare: () -> Unit,
     onDelete: () -> Unit,
     onBack: () -> Unit,
@@ -290,6 +297,8 @@ fun PlayerScreen(
     val currentSwitchVideo by rememberUpdatedState(onSwitchVideo)
     var offset by remember { mutableStateOf(Offset.Zero) }
     var chromeVisible by remember { mutableStateOf(true) }
+    var showInfo by remember { mutableStateOf(false) }
+    var fileInfo by remember(source.uri) { mutableStateOf<MediaFileInfo?>(null) }
 
     // Sample the video so every glass surface and its content follows what is actually behind it.
     var textureView by remember { mutableStateOf<TextureView?>(null) }
@@ -425,6 +434,21 @@ fun PlayerScreen(
             }
         }
     }
+
+    // Read the file's details on demand, the first time the info sheet is opened for this clip.
+    LaunchedEffect(source.uri, showInfo) {
+        if (showInfo) {
+            fileInfo = withContext(Dispatchers.IO) { loadMediaInfo(context, source.uri) }
+        }
+    }
+
+    PlayerInfoDialog(
+        show = showInfo,
+        title = source.title,
+        uri = source.uri,
+        info = fileInfo,
+        onDismiss = { showInfo = false },
+    )
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         // Publish this page's backdrop so the shared glass components sample the video instead of
@@ -679,7 +703,8 @@ fun PlayerScreen(
                     .fillMaxWidth()
                     .padding(vertical = 28.dp)
                     .navHideAnimation(
-                        progress = chromeProgress,
+                        // The info sheet hides the bars through the same animation.
+                        progress = if (showInfo) 0f else chromeProgress,
                         maxBlur = CHROME_HIDE_BLUR,
                         style = NavigationStyle.HYPER_OS_FLOATING,
                         // Fade with the blur: these bars are translucent, so holding full opacity
@@ -732,7 +757,7 @@ fun PlayerScreen(
                     contentColor = barInk,
                     onToggleFavorite = onToggleFavorite,
                     onOpenWith = onOpenWith,
-                    onInfo = onInfo,
+                    onInfo = { showInfo = true },
                     onShare = onShare,
                     onDelete = onDelete,
                 )
@@ -1023,6 +1048,107 @@ private fun PlayerToolbarItem(
             fontSize = NAV_LABEL_SIZE,
             fontWeight = FontWeight.Medium,
             color = contentColor,
+        )
+    }
+}
+
+/** Everything the info panel shows about the file behind a clip. */
+private data class MediaFileInfo(
+    val path: String,
+    val durationMs: Long,
+    val sizeBytes: Long,
+    val modifiedAt: Long,
+)
+
+private fun loadMediaInfo(context: Context, uri: String): MediaFileInfo? = runCatching {
+    val parsed = Uri.parse(uri)
+    var path = parsed.path.orEmpty()
+    var size = 0L
+    var modified = 0L
+    var duration = 0L
+    context.contentResolver.query(
+        parsed,
+        arrayOf(
+            MediaStore.MediaColumns.RELATIVE_PATH,
+            MediaStore.MediaColumns.DISPLAY_NAME,
+            MediaStore.MediaColumns.SIZE,
+            MediaStore.MediaColumns.DATE_MODIFIED,
+            MediaStore.MediaColumns.DURATION,
+        ),
+        null,
+        null,
+        null,
+    )?.use { cursor ->
+        if (cursor.moveToFirst()) {
+            val relative = cursor.getString(0).orEmpty()
+            val name = cursor.getString(1).orEmpty()
+            size = cursor.getLong(2)
+            // DATE_MODIFIED is seconds since the epoch.
+            modified = cursor.getLong(3) * 1000L
+            duration = cursor.getLong(4)
+            if (relative.isNotBlank()) path = "$relative$name"
+        }
+    }
+    MediaFileInfo(path = path, durationMs = duration, sizeBytes = size, modifiedAt = modified)
+}.getOrNull()
+
+private fun dateLabel(millis: Long): String {
+    if (millis <= 0L) return "未知"
+    return SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(millis))
+}
+
+/**
+ * Info sheet: file name and path in the dialog's own title/summary slots, then a divider and the
+ * file's details.
+ */
+@Composable
+private fun PlayerInfoDialog(
+    show: Boolean,
+    title: String,
+    uri: String,
+    info: MediaFileInfo?,
+    onDismiss: () -> Unit,
+) {
+    WindowDialog(
+        show = show,
+        title = title,
+        summary = info?.path?.takeIf { it.isNotBlank() } ?: uri,
+        onDismissRequest = onDismiss,
+    ) {
+        Column(Modifier.fillMaxWidth()) {
+            HorizontalDivider()
+            Spacer(Modifier.height(12.dp))
+            InfoLine("时长", if (info != null) formatTime(info.durationMs) else "读取中…")
+            InfoLine("大小", if (info != null) fileSizeLabel(info.sizeBytes) else "读取中…")
+            InfoLine(
+                "修改时间",
+                if (info != null) dateLabel(info.modifiedAt) else "读取中…",
+            )
+            Spacer(Modifier.height(8.dp))
+            GlassDialogButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) {
+                Text("完成")
+            }
+        }
+    }
+}
+
+/** One label/value pair inside the info sheet. */
+@Composable
+private fun InfoLine(label: String, value: String) {
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = MiuixTheme.textStyles.body2,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+        )
+        Spacer(Modifier.weight(1f))
+        Text(
+            text = value,
+            style = MiuixTheme.textStyles.body2,
+            textAlign = TextAlign.End,
         )
     }
 }
