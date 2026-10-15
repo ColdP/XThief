@@ -55,8 +55,15 @@ class DownloadNotifier(private val context: Context) {
             .setContentIntent(pending)
             .setAutoCancel(true)
             .build()
-        runCatching { manager?.notify(task.id.hashCode(), notification) }
+        runCatching { manager?.notify(plainNotificationId(task.id), notification) }
     }
+
+    /**
+     * Plain completion notifications use their own id space so they can never collide with the
+     * Super Island's focus notification for the same task — a shared id would make one replace
+     * the other.
+     */
+    private fun plainNotificationId(taskId: String): Int = taskId.hashCode() + PLAIN_ID_OFFSET
 
     private fun hasPermission(): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return true
@@ -78,5 +85,8 @@ class DownloadNotifier(private val context: Context) {
 
     private companion object {
         const val CHANNEL_ID = "xthief_downloads"
+
+        /** Keeps plain notification ids away from the island's ids. */
+        const val PLAIN_ID_OFFSET = 0x40000000
     }
 }

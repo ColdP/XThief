@@ -24,7 +24,16 @@ class MediaLibrary(context: Context) {
 
     val current: List<MediaEntry> get() = _entries.value
 
-    suspend fun refresh(directories: List<String> = listOf("Movies/XThief")) {
+    private var lastScanAt = 0L
+
+    /**
+     * Rescans the media store. Calls closer together than [SCAN_MIN_INTERVAL_MS] are skipped so
+     * that automatic refreshes on page entry cannot stack up MediaStore queries.
+     */
+    suspend fun refresh(directories: List<String> = listOf(DEFAULT_SAVE_DIR)) {
+        val now = System.currentTimeMillis()
+        if (now - lastScanAt < SCAN_MIN_INTERVAL_MS) return
+        lastScanAt = now
         val scanned = withContext(Dispatchers.IO) { query(scannedDirectories(directories)) }
         _entries.value = scanned.sortedByDescending { it.addedAt }
     }
@@ -103,4 +112,19 @@ class MediaLibrary(context: Context) {
     }.getOrDefault(false)
 
     fun deleteFile(path: String): Boolean = runCatching { File(path).delete() }.getOrDefault(false)
+
+    /** Deletes several entries at once and drops them from the cached list. */
+    fun deleteAll(entries: List<MediaEntry>): Int {
+        val removed = entries.count { delete(it) }
+        if (removed > 0) {
+            val ids = entries.mapTo(hashSetOf()) { it.uri }
+            _entries.value = _entries.value.filterNot { it.uri in ids }
+        }
+        return removed
+    }
+
+    private companion object {
+        /** Minimum gap between two MediaStore scans. */
+        const val SCAN_MIN_INTERVAL_MS = 1_200L
+    }
 }

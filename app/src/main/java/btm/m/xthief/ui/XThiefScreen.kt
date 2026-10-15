@@ -183,6 +183,7 @@ fun XThiefScreen(
                                 onOpen = { openUri(container, it.uri) },
                                 onShare = { shareUri(container, it.uri, it.displayName) },
                                 onDelete = { container.mediaLibrary.delete(it) },
+                                onDeleteAll = { targets -> container.mediaLibrary.deleteAll(targets) },
                             )
 
                             MainTab.SETTINGS -> SettingsPage(

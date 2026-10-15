@@ -199,11 +199,14 @@ class XDownloadManager(
                     savedUri = uri,
                 )
             }
-            if (settings.showDownloadNotifications) {
-                task(id)?.let { finished -> notifier.notifyCompleted(finished, downloaded) }
-            }
+            // Only one completion notification may be posted per task. The island and the plain
+            // notifier both key off task.id.hashCode(), so posting both makes the plain one
+            // replace the island notification (same id, different channel) and the island
+            // disappears. The island already carries the result text, so it wins when enabled.
             if (settings.islandEnabled) {
                 task(id)?.let { finished -> island.notifyResult(finished, success = true) }
+            } else if (settings.showDownloadNotifications) {
+                task(id)?.let { finished -> notifier.notifyCompleted(finished, downloaded) }
             }
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
             target?.abort()
@@ -219,6 +222,10 @@ class XDownloadManager(
             }
             if (settings.islandEnabled) {
                 task(id)?.let { failed -> island.notifyResult(failed, success = false) }
+            } else if (settings.showDownloadNotifications) {
+                task(id)?.let { failed ->
+                    notifier.notifyCompleted(failed, failed.bytesDownloaded)
+                }
             }
         } finally {
             connection?.disconnect()

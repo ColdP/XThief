@@ -48,6 +48,7 @@ import btm.m.xthief.ui.components.LocalToolbarCollapsed
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.ToolbarPosition
 import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.ChevronBackward
@@ -69,6 +70,8 @@ fun AppPage(
     contentBottomPadding: Int = 148,
     showLargeTitle: Boolean = true,
     background: (@Composable () -> Unit)? = null,
+    floatingToolbarPosition: ToolbarPosition = ToolbarPosition.BottomCenter,
+    floatingToolbar: @Composable () -> Unit = {},
     content: LazyListScope.() -> Unit,
 ) {
     val scroll = MiuixScrollBehavior()
@@ -88,6 +91,8 @@ fun AppPage(
         CompositionLocalProvider(LocalPageBackdrop provides backdrop) {
         Scaffold(
             containerColor = Color.Transparent,
+            floatingToolbar = floatingToolbar,
+            floatingToolbarPosition = floatingToolbarPosition,
             topBar = {
                 CompositionLocalProvider(
                     LocalToolbarBackdrop provides backdrop,
