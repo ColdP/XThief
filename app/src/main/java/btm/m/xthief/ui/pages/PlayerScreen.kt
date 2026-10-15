@@ -146,12 +146,7 @@ private val TRANSPORT_ICON_SIZE = NAV_ICON_SIZE * 0.8f
  */
 private val PLAYER_GLASS_TINT = Color.White.copy(alpha = .42f)
 
-/**
- * Progress bar tinted like the transport buttons (black), just at a lower opacity, so it reads as a
- * translucent bar rather than a high-contrast stripe.
- */
-private val PROGRESS_FOREGROUND = Color.Black.copy(alpha = .50f)
-private val PROGRESS_TRACK = Color.Black.copy(alpha = .15f)
+/** Progress bar tinted from the bar's content colour, so it flips with the background. */
 
 /** Chrome hide/show timing, matched to the bottom navigation's own hide animation. */
 private const val CHROME_ANIM_MS = 340
@@ -167,24 +162,45 @@ private val TOP_BAR_HEIGHT = 56.dp
 private const val TOP_TINT_ALPHA = .38f
 private const val TINT_REFRESH_MS = 1_200L
 private const val TITLE_INK_THRESHOLD = .55f
-private val TOP_BAR_SAMPLE_HEIGHT = 64.dp
 
-/** Average colour of a bitmap, sampled sparsely — enough for a stable tint, far cheaper. */
-private fun averageColorOf(bitmap: Bitmap): Color {
-    val pixels = IntArray(bitmap.width * bitmap.height)
-    bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+/** The frame is grabbed at 1/N size for sampling; both strips are averaged from that one bitmap. */
+private const val TINT_THUMB_DIVISOR = 8
+
+/** Top strip: the status bar and title bar band. */
+private const val TINT_TOP_FRACTION = .12f
+
+/** Bottom strip: where the transport card and action bar sit. */
+private const val TINT_BOTTOM_START = .74f
+
+/** Average colour of a bitmap region, sampled sparsely — enough for a stable tint, far cheaper. */
+private fun averageColorOfRegion(
+    bitmap: Bitmap,
+    x: Int,
+    y: Int,
+    width: Int,
+    height: Int,
+): Color {
+    if (width <= 0 || height <= 0) return Color.Black
+    val row = IntArray(width)
     var red = 0L
     var green = 0L
     var blue = 0L
     var count = 0
-    var index = 0
-    while (index < pixels.size) {
-        val pixel = pixels[index]
-        red += (pixel shr 16) and 0xFF
-        green += (pixel shr 8) and 0xFF
-        blue += pixel and 0xFF
-        count++
-        index += 37
+    var rowIndex = y
+    val lastRow = (y + height).coerceAtMost(bitmap.height)
+    while (rowIndex < lastRow) {
+        bitmap.getPixels(row, 0, width, x, rowIndex, width, 1)
+        var column = 0
+        while (column < width) {
+            val pixel = row[column]
+            red += (pixel shr 16) and 0xFF
+            green += (pixel shr 8) and 0xFF
+            blue += pixel and 0xFF
+            count++
+            column += 8
+        }
+        // Every 4th row is plenty for an average.
+        rowIndex += 4
     }
     if (count == 0) return Color.Black
     return Color(
@@ -234,36 +250,54 @@ fun PlayerScreen(
     var offset by remember { mutableStateOf(Offset.Zero) }
     var chromeVisible by remember { mutableStateOf(true) }
 
-    // Sample the video's top strip (behind the status bar) so the title ink and the blur tint
-    // always match what is actually behind them, and re-sample as playback moves on.
+    // Sample the video so every glass surface and its content follows what is actually behind it.
     var textureView by remember { mutableStateOf<TextureView?>(null) }
     // Starts at the frosted fallback so the first frame is not black; replaced by the sampled
     // colour as soon as the first frame is drawn.
     var topTint by remember { mutableStateOf(PLAYER_GLASS_TINT) }
-    val statusBarPx = WindowInsets.statusBars.getTop(density)
-    val sampleHeightPx = statusBarPx + with(density) { TOP_BAR_SAMPLE_HEIGHT.roundToPx() }
+    var bottomTint by remember { mutableStateOf(PLAYER_GLASS_TINT) }
 
-    LaunchedEffect(textureView, sampleHeightPx) {
+    LaunchedEffect(textureView) {
         while (true) {
             val view = textureView
             if (view != null && view.isAvailable && view.width > 0 && view.height > 0) {
                 val sampled = withContext(Dispatchers.IO) {
                     runCatching {
-                        // The two-argument overload reads from the top-left corner, which is exactly
-                        // the strip under the status bar.
-                        val height = sampleHeightPx.coerceIn(1, view.height)
-                        val bitmap = view.getBitmap(view.width, height) ?: return@runCatching null
-                        val color = averageColorOf(bitmap)
+                        // One downscaled grab of the whole frame serves both strips.
+                        val thumbWidth = (view.width / TINT_THUMB_DIVISOR).coerceAtLeast(1)
+                        val thumbHeight = (view.height / TINT_THUMB_DIVISOR).coerceAtLeast(1)
+                        val bitmap = view.getBitmap(thumbWidth, thumbHeight)
+                            ?: return@runCatching null
+                        val topHeight = (thumbHeight * TINT_TOP_FRACTION)
+                            .toInt()
+                            .coerceAtLeast(1)
+                        val bottomStart = (thumbHeight * TINT_BOTTOM_START)
+                            .toInt()
+                            .coerceIn(0, thumbHeight - 1)
+                        val top = averageColorOfRegion(bitmap, 0, 0, thumbWidth, topHeight)
+                        val bottom = averageColorOfRegion(
+                            bitmap,
+                            0,
+                            bottomStart,
+                            thumbWidth,
+                            thumbHeight - bottomStart,
+                        )
                         bitmap.recycle()
-                        color
+                        top to bottom
                     }.getOrNull()
                 }
-                if (sampled != null) topTint = sampled
+                if (sampled != null) {
+                    topTint = sampled.first
+                    bottomTint = sampled.second
+                }
             }
             delay(TINT_REFRESH_MS)
         }
     }
     val titleInk = if (topTint.luminance() > TITLE_INK_THRESHOLD) Color.Black else Color.White
+    // The bars at the bottom sit over the lower part of the frame, so their content follows that
+    // strip instead of the top one.
+    val barInk = if (bottomTint.luminance() > TITLE_INK_THRESHOLD) Color.Black else Color.White
     // Every glass surface — the top bar, the transport card and the action bar — carries this
     // sampled tint, so they all blend into whatever the video is showing.
     val glassTint = topTint.copy(alpha = TOP_TINT_ALPHA)
@@ -543,6 +577,7 @@ fun PlayerScreen(
                     // produced the white patch during the hide/show animation.
                     highlightAlpha = 0f,
                     surfaceTint = glassTint,
+                    contentColor = barInk,
                     onTogglePlay = { togglePlayback(player) { isPlaying = it } },
                     onToggleMute = {
                         val next = !isMuted
@@ -569,6 +604,7 @@ fun PlayerScreen(
                     favorite = favorite,
                     highlightAlpha = 0f,
                     surfaceTint = glassTint,
+                    contentColor = barInk,
                     onToggleFavorite = onToggleFavorite,
                     onOpenWith = onOpenWith,
                     onInfo = onInfo,
@@ -622,6 +658,7 @@ private fun PlayerTransportCard(
     scrubbing: Boolean,
     highlightAlpha: Float,
     surfaceTint: Color,
+    contentColor: Color,
     onTogglePlay: () -> Unit,
     onToggleMute: () -> Unit,
     onScrubStart: () -> Unit,
@@ -674,7 +711,7 @@ private fun PlayerTransportCard(
                                 },
                                 if (isPlaying) "暂停" else "播放",
                                 Modifier.size(TRANSPORT_ICON_SIZE),
-                                tint = Color.Black,
+                                tint = contentColor,
                             )
                         }
                     }
@@ -682,6 +719,7 @@ private fun PlayerTransportCard(
                 ScrubBar(
                     positionMs = positionMs,
                     durationMs = durationMs,
+                    contentColor = contentColor,
                     onScrubStart = onScrubStart,
                     onScrub = onScrub,
                     onScrubEnd = onScrubEnd,
@@ -707,7 +745,7 @@ private fun PlayerTransportCard(
                                 },
                                 if (isMuted) "取消静音" else "静音",
                                 Modifier.size(TRANSPORT_ICON_SIZE),
-                                tint = Color.Black,
+                                tint = contentColor,
                             )
                         }
                     }
@@ -722,13 +760,13 @@ private fun PlayerTransportCard(
                     Text(
                         text = formatTime(positionMs),
                         style = MiuixTheme.textStyles.footnote2,
-                        color = Color.Black,
+                        color = contentColor,
                         textAlign = TextAlign.Start,
                     )
                     Text(
                         text = formatTime(durationMs),
                         style = MiuixTheme.textStyles.footnote2,
-                        color = Color.Black,
+                        color = contentColor,
                         textAlign = TextAlign.End,
                     )
                 }
@@ -743,6 +781,7 @@ private fun PlayerActionToolbar(
     favorite: Boolean,
     highlightAlpha: Float,
     surfaceTint: Color,
+    contentColor: Color,
     onToggleFavorite: () -> Unit,
     onOpenWith: () -> Unit,
     onInfo: () -> Unit,
@@ -767,12 +806,13 @@ private fun PlayerActionToolbar(
                     MiuixIcons.Regular.Favorites
                 },
                 label = "收藏",
+                contentColor = contentColor,
                 onClick = onToggleFavorite,
             )
-            PlayerToolbarItem(MiuixIcons.Regular.Forward, "打开", onOpenWith)
-            PlayerToolbarItem(MiuixIcons.Regular.Info, "信息", onInfo)
-            PlayerToolbarItem(MiuixIcons.Regular.Share, "分享", onShare)
-            PlayerToolbarItem(MiuixIcons.Regular.Delete, "删除", onDelete)
+            PlayerToolbarItem(MiuixIcons.Regular.Forward, "打开", contentColor, onOpenWith)
+            PlayerToolbarItem(MiuixIcons.Regular.Info, "信息", contentColor, onInfo)
+            PlayerToolbarItem(MiuixIcons.Regular.Share, "分享", contentColor, onShare)
+            PlayerToolbarItem(MiuixIcons.Regular.Delete, "删除", contentColor, onDelete)
         }
     }
 }
@@ -782,6 +822,7 @@ private fun PlayerActionToolbar(
 private fun ScrubBar(
     positionMs: Long,
     durationMs: Long,
+    contentColor: Color,
     onScrubStart: () -> Unit,
     onScrub: (Float) -> Unit,
     onScrubEnd: () -> Unit,
@@ -825,9 +866,9 @@ private fun ScrubBar(
             colors = ProgressIndicatorColors(
                 // Named, because the positional order is (foreground, disabled, background):
                 // passing the track color second left the background at opaque white.
-                foregroundColor = PROGRESS_FOREGROUND,
-                disabledForegroundColor = Color.Black.copy(alpha = .30f),
-                backgroundColor = PROGRESS_TRACK,
+                foregroundColor = contentColor.copy(alpha = .50f),
+                disabledForegroundColor = contentColor.copy(alpha = .30f),
+                backgroundColor = contentColor.copy(alpha = .15f),
             ),
             height = 6.dp,
             modifier = Modifier.fillMaxWidth(),
@@ -840,6 +881,7 @@ private fun ScrubBar(
 private fun PlayerToolbarItem(
     icon: ImageVector,
     label: String,
+    contentColor: Color,
     onClick: () -> Unit,
 ) {
     Column(
@@ -850,12 +892,12 @@ private fun PlayerToolbarItem(
             .pointerInput(Unit) { detectTapGestures(onTap = { onClick() }) }
             .padding(horizontal = 4.dp, vertical = 2.dp),
     ) {
-        Icon(icon, label, Modifier.size(NAV_ICON_SIZE), tint = Color.Black)
+        Icon(icon, label, Modifier.size(NAV_ICON_SIZE), tint = contentColor)
         Text(
             text = label,
             fontSize = NAV_LABEL_SIZE,
             fontWeight = FontWeight.Medium,
-            color = Color.Black,
+            color = contentColor,
         )
     }
 }
