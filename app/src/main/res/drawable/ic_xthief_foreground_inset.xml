@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Foreground layer for the adaptive icon, scaled to 80%.
+
+  Adaptive icons crop to a mask that may cut up to a third of the artwork, so the layer is inset
+  by 10% on every side to keep the mark clear of the edges (and at 80% as requested).
+-->
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@drawable/ic_xthief_foreground"
+    android:inset="10%" />

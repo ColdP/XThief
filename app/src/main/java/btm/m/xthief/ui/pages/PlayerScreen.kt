@@ -130,6 +130,7 @@ import btm.m.xthief.ui.components.BlurFadeContent
 import btm.m.xthief.ui.components.GlassDialogButton
 import btm.m.xthief.ui.components.GlassFloatingToolbar
 import btm.m.xthief.ui.components.GlassToolbarIconButton
+import btm.m.xthief.ui.components.LocalDialogBackdrop
 import btm.m.xthief.ui.components.LocalPageBackdrop
 import btm.m.xthief.ui.components.WindowDialog
 import btm.m.xthief.ui.components.navHideAnimation
@@ -460,9 +461,14 @@ fun PlayerScreen(
     )
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        // Publish this page's backdrop so the shared glass components sample the video instead of
-        // falling back to a flat tint.
-        CompositionLocalProvider(LocalPageBackdrop provides backdrop) {
+        // Publish this page's backdrop so the shared glass components (GlassFloatingToolbar,
+        // GlassToolbarIconButton) sample the video instead of falling back to a flat tint.
+        // LocalDialogBackdrop is overridden too: the app root points it at the page behind the
+        // player, which made the info sheet sample the library rather than the video.
+        CompositionLocalProvider(
+            LocalPageBackdrop provides backdrop,
+            LocalDialogBackdrop provides backdrop,
+        ) {
             // Recorded once here; the glass bars above sample this backdrop. The picture follows
             // the finger during a short-video swipe, while the chrome stays put.
             Box(
