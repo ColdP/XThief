@@ -527,8 +527,9 @@ fun SettingsPage(
             ssid = settings.youtubeSsid,
             apisid = settings.youtubeApisid,
             sapisid = settings.youtubeSapisid,
+            poToken = settings.youtubePoToken,
             onDismiss = { editingYoutubeCookie = false },
-            onSave = { sid, hsid, ssid, apisid, sapisid ->
+            onSave = { sid, hsid, ssid, apisid, sapisid, poToken ->
                 update {
                     it.copy(
                         youtubeSid = sid,
@@ -536,6 +537,7 @@ fun SettingsPage(
                         youtubeSsid = ssid,
                         youtubeApisid = apisid,
                         youtubeSapisid = sapisid,
+                        youtubePoToken = poToken,
                     )
                 }
                 editingYoutubeCookie = false
@@ -617,14 +619,16 @@ private fun YoutubeCookieDialog(
     ssid: String,
     apisid: String,
     sapisid: String,
+    poToken: String,
     onDismiss: () -> Unit,
-    onSave: (String, String, String, String, String) -> Unit,
+    onSave: (String, String, String, String, String, String) -> Unit,
 ) {
     var sidDraft by remember { mutableStateOf(sid) }
     var hsidDraft by remember { mutableStateOf(hsid) }
     var ssidDraft by remember { mutableStateOf(ssid) }
     var apisidDraft by remember { mutableStateOf(apisid) }
     var sapisidDraft by remember { mutableStateOf(sapisid) }
+    var poTokenDraft by remember { mutableStateOf(poToken) }
 
     WindowDialog(show = true, onDismissRequest = onDismiss) {
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -649,6 +653,7 @@ private fun YoutubeCookieDialog(
             CookieField("SSID", ssidDraft) { ssidDraft = it }
             CookieField("APISID", apisidDraft) { apisidDraft = it }
             CookieField("SAPISID", sapisidDraft) { sapisidDraft = it }
+            CookieField("PO Token（可选，机器人校验用）", poTokenDraft) { poTokenDraft = it }
             Row(
                 Modifier.fillMaxWidth().padding(top = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -661,6 +666,7 @@ private fun YoutubeCookieDialog(
                             ssidDraft.trim(),
                             apisidDraft.trim(),
                             sapisidDraft.trim(),
+                            poTokenDraft.trim(),
                         )
                     },
                     modifier = Modifier.weight(1f),

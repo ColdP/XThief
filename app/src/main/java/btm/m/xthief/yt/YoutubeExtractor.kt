@@ -39,13 +39,12 @@ class YoutubeExtractor(private val settingsStore: XThiefSettingsStore) {
 
     suspend fun resolve(videoId: String): TweetMedia = withContext(Dispatchers.IO) {
         val cookie = settingsStore.current.youtubeCookieHeader
-        // yt-dlp uses a different client order once credentials are present, because
-        // `web_embedded` is the one that accepts cookies best.
-        val clients = if (cookie != null) AUTHED_CLIENTS else ANONYMOUS_CLIENTS
-
+        // Which clients YouTube accepts depends on IP, region and account, so every client is
+        // tried in turn and the first that returns streams wins.
+        //
         // Collect the failures so the message can say what each client complained about.
         val attempts = mutableListOf<String>()
-        for (client in clients) {
+        for (client in ALL_CLIENTS) {
             val result = runCatching { player(videoId, client, cookie) }
             result.onSuccess { return@withContext it }
             val reason = result.exceptionOrNull()?.message ?: "未知错误"
@@ -58,6 +57,7 @@ class YoutubeExtractor(private val settingsStore: XThiefSettingsStore) {
 
     /** Runs one player call and turns its response into [TweetMedia]. */
     private fun player(videoId: String, client: Client, cookie: String?): TweetMedia {
+        val poToken = settingsStore.current.youtubePoToken.trim().takeIf { it.isNotEmpty() }
         val connection =
             (URL("$PLAYER_URL?key=$API_KEY&prettyPrint=false").openConnection()
                 as HttpURLConnection).apply {
@@ -89,6 +89,10 @@ class YoutubeExtractor(private val settingsStore: XThiefSettingsStore) {
             .put("videoId", videoId)
             .put("contentCheckOk", true)
             .put("racyCheckOk", true)
+        // A user-supplied integrity token, when the environment demands one.
+        poToken?.let {
+            body.put("serviceIntegrityDimensions", JSONObject().put("poToken", it))
+        }
 
         val response = try {
             connection.outputStream.use { it.write(body.toString().toByteArray()) }
@@ -232,16 +236,60 @@ class YoutubeExtractor(private val settingsStore: XThiefSettingsStore) {
             extraContext = emptyMap(),
         )
 
-        /**
-         * Anonymous order, mirroring yt-dlp's `_DEFAULT_CLIENTS`.
-         *
-         * `tv_samsung` and `visionos` carry no `GvsPoTokenPolicy` in yt-dlp, i.e. they do **not**
-         * demand a PO Token — the `web` client does, and obtaining one requires running YouTube's
-         * BotGuard JavaScript, which is not something this app can do.
-         */
-        val ANONYMOUS_CLIENTS = listOf(TV_SAMSUNG, VISIONOS, WEB)
+        private val IOS = Client(
+            name = "IOS",
+            version = "21.26.4",
+            numericId = "5",
+            userAgent = "com.google.ios.youtube/21.26.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)",
+            extraContext = mapOf(
+                "deviceMake" to "Apple",
+                "deviceModel" to "iPhone16,2",
+                "osName" to "iPhone",
+                "osVersion" to "18.3.2.22D82",
+            ),
+        )
 
-        /** Order once cookies are present, mirroring yt-dlp's `_DEFAULT_AUTHED_CLIENTS`. */
-        val AUTHED_CLIENTS = listOf(WEB_EMBEDDED, TV_SAMSUNG, WEB)
+        private val ANDROID = Client(
+            name = "ANDROID",
+            version = "21.26.364",
+            numericId = "3",
+            userAgent = "com.google.android.youtube/21.26.364 (Linux; U; Android 11) gzip",
+            extraContext = mapOf(
+                "androidSdkVersion" to "30",
+                "osName" to "Android",
+                "osVersion" to "11",
+            ),
+        )
+
+        private val MWEB = Client(
+            name = "MWEB",
+            version = "2.20260708.05.00",
+            numericId = "2",
+            userAgent = "Mozilla/5.0 (iPad; CPU OS 16_7_10 like Mac OS X) AppleWebKit/605.1.15 " +
+                "(KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1,gzip(gfe)",
+            extraContext = emptyMap(),
+        )
+
+        /**
+         * Every client worth attempting, best first.
+         *
+         * Which clients Google accepts varies by IP, region and even per video — measured here,
+         * `VISIONOS` answered OK for one video and `LOGIN_REQUIRED` for the next, while `ANDROID`
+         * and `IOS` kept working. So the pool is tried in turn and the first that returns streams
+         * wins; the TV and web clients are kept only as last resorts because they were refused
+         * outright in testing.
+         *
+         * `ANDROID` leads because it was the most consistent and also returns a progressive MP4
+         * (video and audio in one file), which avoids a mux step.
+         */
+        val ALL_CLIENTS = listOf(
+            ANDROID,
+            IOS,
+            VISIONOS,
+            TV_SAMSUNG,
+            WEB_EMBEDDED,
+            MWEB,
+            WEB,
+        )
     }
 }

@@ -107,6 +107,15 @@ data class XThiefSettings(
     val youtubeApisid: String = "",
     val youtubeSapisid: String = "",
     /**
+     * Optional PO Token for YouTube.
+     *
+     * Some IPs / regions make Google demand proof that the client is not a bot. Producing one
+     * requires running YouTube's BotGuard JavaScript, which this app cannot do, so it can only be
+     * supplied from outside (a browser extension or a `bgutil` provider). When set it is attached
+     * to every player request.
+     */
+    val youtubePoToken: String = "",
+    /**
      * Bilibili cookies, entered one field at a time the way a browser's cookie table lists them.
      * `SESSDATA` alone is usually enough; `bili_jct` and `DedeUserID` are optional extras.
      */
@@ -236,6 +245,7 @@ class XThiefSettingsStore(context: Context) {
         youtubeSsid = prefs.getString(KEY_COOKIE_YT_SSID, null).orEmpty(),
         youtubeApisid = prefs.getString(KEY_COOKIE_YT_APISID, null).orEmpty(),
         youtubeSapisid = prefs.getString(KEY_COOKIE_YT_SAPISID, null).orEmpty(),
+        youtubePoToken = prefs.getString(KEY_COOKIE_YT_PO_TOKEN, null).orEmpty(),
         bilibiliSessdata = prefs.getString(KEY_COOKIE_BILI_SESSDATA, null).orEmpty(),
         bilibiliJct = prefs.getString(KEY_COOKIE_BILI_JCT, null).orEmpty(),
         bilibiliUserId = prefs.getString(KEY_COOKIE_BILI_USERID, null).orEmpty(),
@@ -273,6 +283,7 @@ class XThiefSettingsStore(context: Context) {
             .putString(KEY_COOKIE_YT_SSID, value.youtubeSsid)
             .putString(KEY_COOKIE_YT_APISID, value.youtubeApisid)
             .putString(KEY_COOKIE_YT_SAPISID, value.youtubeSapisid)
+            .putString(KEY_COOKIE_YT_PO_TOKEN, value.youtubePoToken)
             .putString(KEY_COOKIE_BILI_SESSDATA, value.bilibiliSessdata)
             .putString(KEY_COOKIE_BILI_JCT, value.bilibiliJct)
             .putString(KEY_COOKIE_BILI_USERID, value.bilibiliUserId)
@@ -323,6 +334,7 @@ private const val KEY_COOKIE_YT_HSID = "cookie_yt_hsid"
 private const val KEY_COOKIE_YT_SSID = "cookie_yt_ssid"
 private const val KEY_COOKIE_YT_APISID = "cookie_yt_apisid"
 private const val KEY_COOKIE_YT_SAPISID = "cookie_yt_sapisid"
+private const val KEY_COOKIE_YT_PO_TOKEN = "cookie_yt_po_token"
 private const val KEY_COOKIE_BILI_SESSDATA = "cookie_bili_sessdata"
 private const val KEY_COOKIE_BILI_JCT = "cookie_bili_jct"
 private const val KEY_COOKIE_BILI_USERID = "cookie_bili_userid"
