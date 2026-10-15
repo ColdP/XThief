@@ -11,6 +11,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
@@ -85,7 +86,12 @@ fun GlassFloatingToolbar(
                 )
             },
             innerShadow = null,
-            onDrawSurface = { drawRect(tint) },
+            // Must follow the shape: a plain drawRect spills past the capsule's rounded corners
+            // and shows up as an opaque block while the bar animates away.
+            onDrawSurface = {
+                val radius = CornerRadius(cornerRadius.toPx(), cornerRadius.toPx())
+                drawRoundRect(color = tint, cornerRadius = radius)
+            },
         )
     } else {
         Modifier.clip(shape).background(tint)

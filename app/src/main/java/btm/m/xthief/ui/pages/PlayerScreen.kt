@@ -147,8 +147,8 @@ private val PROGRESS_TRACK = Color.Black.copy(alpha = .15f)
 private const val CHROME_ANIM_MS = 340
 private val CHROME_HIDE_BLUR = 16.dp
 
-/** Left inset of the title block: the back button's start padding plus its capsule width. */
-private val TOP_BAR_TITLE_START = 56.dp
+/** How close the player must get to a requested position before polling resumes from it. */
+private const val SEEK_SETTLE_MS = 1_200L
 
 /**
  * The built-in player.
@@ -183,6 +183,8 @@ fun PlayerScreen(
     var scrubMs by remember { mutableLongStateOf(0L) }
     var videoWidth by remember { mutableIntStateOf(0) }
     var videoHeight by remember { mutableIntStateOf(0) }
+    /** Position a seek is heading to; -1 when idle. Keeps the poll from undoing the seek. */
+    var pendingSeekMs by remember { mutableLongStateOf(-1L) }
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
     var chromeVisible by remember { mutableStateOf(true) }
@@ -228,13 +230,21 @@ fun PlayerScreen(
         runCatching { media.setSurface(target) }
     }
 
-    // Playback clock; paused while scrubbing so the thumb follows the finger. The playing flag is
-    // re-read from the player so the button always shows the real state.
-    LaunchedEffect(player, isPlaying, isScrubbing) {
-        while (isPlaying && !isScrubbing) {
-            player?.let {
-                positionMs = it.currentPosition.toLong()
-                isPlaying = it.isPlaying
+    // Playback clock. Runs unconditionally so the play/pause button always mirrors the player,
+    // including while paused. While a seek is settling the reported position is ignored, otherwise
+    // the bar snaps back to the old spot before seekTo lands.
+    LaunchedEffect(player, isScrubbing) {
+        while (true) {
+            player?.let { media ->
+                isPlaying = media.isPlaying
+                if (!isScrubbing) {
+                    val current = media.currentPosition.toLong()
+                    val target = pendingSeekMs
+                    if (target < 0L || kotlin.math.abs(current - target) < SEEK_SETTLE_MS) {
+                        pendingSeekMs = -1L
+                        positionMs = current
+                    }
+                }
             }
             delay(200)
         }
@@ -376,12 +386,14 @@ fun PlayerScreen(
                             progress = 1f,
                             tintedWhenExpanded = false,
                         )
-                        // The bar contributes the window insets and the back-button slot only; the
-                        // title block is laid out here so both lines share one left edge that
-                        // lines up with the button.
+                        // SmallTopAppBar is MIUIX's collapsed bar (it has no largeTitle slot at
+                        // all), so it is the correct component for a title bar that starts
+                        // collapsed. title/subtitle are its own slots: the bar owns the window
+                        // insets and the text layout, which is why an overlay on top of it
+                        // collided with the status bar.
                         SmallTopAppBar(
-                            title = "",
-                            subtitle = "",
+                            title = source.title,
+                            subtitle = source.subtitle,
                             color = Color.Transparent,
                             scrollBehavior = scroll,
                             navigationIcon = {
@@ -395,28 +407,6 @@ fun PlayerScreen(
                                 )
                             },
                         )
-                        Column(
-                            Modifier
-                                .align(Alignment.CenterStart)
-                                .padding(start = TOP_BAR_TITLE_START, end = 16.dp),
-                        ) {
-                            Text(
-                                text = source.title,
-                                color = Color.Black,
-                                style = MiuixTheme.textStyles.title4,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            if (source.subtitle.isNotBlank()) {
-                                Text(
-                                    text = source.subtitle,
-                                    color = Color.Black.copy(alpha = .60f),
-                                    style = MiuixTheme.textStyles.footnote2,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            }
-                        }
                     }
                 }
             }
@@ -457,6 +447,7 @@ fun PlayerScreen(
                     },
                     onScrubEnd = {
                         player?.seekTo(scrubMs.toInt())
+                        pendingSeekMs = scrubMs
                         positionMs = scrubMs
                         isScrubbing = false
                     },
@@ -496,7 +487,12 @@ private fun togglePlayback(player: MediaPlayer?, onChanged: (Boolean) -> Unit) {
 
 private fun applySpeed(player: MediaPlayer?, value: Float) {
     val media = player ?: return
-    runCatching { media.playbackParams = media.playbackParams.setSpeed(value) }
+    runCatching {
+        // setPlaybackParams() starts a paused player, so remember and restore the state.
+        val wasPlaying = media.isPlaying
+        media.playbackParams = media.playbackParams.setSpeed(value)
+        if (!wasPlaying) media.pause()
+    }
 }
 
 /**
